@@ -1,0 +1,30 @@
+name: test
+channels:
+  - pytorch-nightly
+  - nvidia
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - jinja2
+  - lightning
+  - natsort
+  - optuna
+  - pandas
+  - pytorch-cuda=12.4
+  - rdkit
+  - seaborn
+  - torchmetrics
+  - tqdm
+  - umap-learn
+  - pip:
+      - cmap
+      - iterative-stratification
+      - owlready2
+      - pybiopax
+      - rdflib
+      - scikit-multilearn
+      - tensorboard
+      - torch
+      - torch_geometric
+      - upsetplot
