@@ -63,7 +63,9 @@ def filter_smiles(smiles: Set[str]):
         for s in smi.split("."):
             if "*" in s:
                 continue
-            n_smiles.add(s)
+            m = Chem.MolFromSmiles(s)
+            if m:
+                n_smiles.add(s)
     return n_smiles
 
 np_model = npscorer.readNPModel()
@@ -137,6 +139,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output-pu-csv", required=True, help="Dataset file, PU"
     )
+    parser.add_argument(
+        "--output-expand-csv", required=True, help="Dataset file, expand"
+    )
     args = parser.parse_args()
 
     ## Init
@@ -145,6 +150,7 @@ if __name__ == "__main__":
     file_output_tcid_csv = args.output_tcid_csv
     file_output_tcid_json = args.output_tcid_json
     file_output_pu_csv = args.output_pu_csv
+    file_output_expand_csv = args.output_expand_csv
 
     print("Parse Substrates file")
     df_substrates = pd.read_csv(file_substrates_csv)
@@ -174,6 +180,7 @@ if __name__ == "__main__":
     df = df[~pd.isna(df["stereo"])]
     df.drop(columns="smiles", inplace=True)
     df.rename(columns={"stereo": "smiles"}, inplace=True)
+    df.to_csv(file_output_expand_csv, index=False)
 
     print("Build pu dataset")
     pu_dataset(df=df, path_output=file_output_pu_csv, path_pubchem=file_pubchem_db)

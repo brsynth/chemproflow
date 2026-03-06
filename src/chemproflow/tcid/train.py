@@ -6,6 +6,7 @@ from chemproflow.model.dataset import mol_to_graph
 from chemproflow.utils.misc import set_seed, write_json, write_pickle
 from chemproflow.tcid.model import ModelTcid
 from chemproflow.model.wrap import WrapModel
+from chemproflow.utils.molecule import fmt_smiles
 from iterstrat.ml_stratifiers import MultilabelStratifiedKFold
 from natsort import natsorted
 import numpy as np
@@ -87,6 +88,9 @@ if __name__ == "__main__":
         "--input-dataset-csv", required=True, help="Dataset"
     )
     parser.add_argument(
+        "--input-pyoverdine-xlsx", help="Dataset pyoverdines: name, smiles, valid columns"
+    )
+    parser.add_argument(
         "--parameter-kfold-int", default= 5, type=int, help="Count K-Fold"
     )
     parser.add_argument(
@@ -106,7 +110,8 @@ if __name__ == "__main__":
     seed = args.parameter_seed_int
     batch_size = args.parameter_batch_size_int
     file_dataset_csv = args.input_dataset_csv
-    
+    file_pyoverdine_xlsx = args.input_pyoverdine_xlsx
+
     file_stats_overlap_csv = os.path.join(outdir, "overlap.csv")
     file_stats_overlap_json = os.path.join(outdir, "overlap.json")
     file_encoder_pkl = os.path.join(outdir, "encoder.pkl")
@@ -116,6 +121,20 @@ if __name__ == "__main__":
 
     print("Read dataset file")
     df = pd.read_csv(file_dataset_csv)
+    if file_pyoverdine_xlsx:
+        df_pyo = pd.read_excel(file_pyoverdine_xlsx)
+        df_pyo = df_pyo[df_pyo["valid"]]
+        df_pyo["smiles"] = df_pyo["smiles"].apply(fmt_smiles)  
+        # Split
+        df_pyo_fir = df_pyo[df_pyo["class"].isin(["PvdI", "PvdII"])].copy()
+        df_pyo_las = df_pyo[df_pyo["class"].isin(["PvdIII"])].copy()
+        df_pyo_fir.to_csv(os.path.join(outdir, "pyoverdine_in_train.csv"), index=False)
+        df_pyo_las.to_csv(os.path.join(outdir, "pyoverdine_not_in_train.csv"), index=False)
+        # Concat
+        df_pyo = df_pyo_fir.copy()
+        df_pyo = df_pyo[["smiles", "tcid"]]
+        df_pyo = df_pyo.sample(frac=1, random_state=seed)
+        df = pd.concat([df, df_pyo], ignore_index=False)
     df = df.groupby("smiles", as_index=False).agg({"tcid": set})
 
     print("Encode labels")
@@ -158,14 +177,37 @@ if __name__ == "__main__":
     torch.save(test_datas, os.path.join(outdir, f"test.pt"))
     test_loader = DataLoader(test_datas, batch_size=batch_size, shuffle=False)
     
-    mskf = MultilabelStratifiedKFold(n_splits=kfold, shuffle=True, random_state=seed)
+    if kfold < 1:
+        raise ValueError("--parameter-kfold-int must be >= 1")
+    if kfold == 1:
+        print("K-Fold set to 1, using a single stratified hold-out split for validation")
+        if len(train_indices_all) < 2:
+            raise ValueError("Need at least 2 training samples when --parameter-kfold-int == 1")
+
+        val_fraction = 0.2
+        min_fraction = 1.0 / max(len(train_indices_all), 2)
+        val_fraction = max(val_fraction, min_fraction)
+        val_fraction = min(val_fraction, 0.5)
+
+        train_features = train_indices_all.reshape(-1, 1)
+        holdout_train, _, holdout_valid, _ = iterative_train_test_split(
+            train_features,
+            labels[train_indices_all],
+            test_size=val_fraction,
+        )
+
+        index_lookup = {idx: pos for pos, idx in enumerate(train_indices_all)}
+        train_pos = np.array([index_lookup[int(idx)] for idx in holdout_train.flatten()], dtype=int)
+        val_pos = np.array([index_lookup[int(idx)] for idx in holdout_valid.flatten()], dtype=int)
+        split_iterator = [(train_pos, val_pos)]
+    else:
+        mskf = MultilabelStratifiedKFold(n_splits=kfold, shuffle=True, random_state=seed)
+        split_iterator = mskf.split(train_indices_all.reshape(-1, 1), labels[train_indices_all])
 
     fold_metrics = []
     per_fold_thresholds = {}
     stats = {}
-    for fold_idx, (train_pos, val_pos) in enumerate(
-        mskf.split(train_indices_all.reshape(-1, 1), labels[train_indices_all])
-    ):
+    for fold_idx, (train_pos, val_pos) in enumerate(split_iterator):
         print(f"=== Fold {fold_idx} / {kfold} ===")
         outdir_kfold = os.path.join(outdir, f"kfold-{fold_idx}")
         os.makedirs(outdir_kfold, exist_ok=True)

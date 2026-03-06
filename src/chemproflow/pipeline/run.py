@@ -103,7 +103,7 @@ if __name__ == "__main__":
     with open(file_encoder_transport_pkl, "rb") as f:
         encoder = pickle.load(f)
     device = next(model.parameters()).device
-    loader = build_loader(df['smiles'].tolist(), batch_size=batch_size)
+    loader = build_loader(df['smiles'].tolist(), batch_size=batch_size, to_fmt=False)
 
     logits_list = []
     with torch.no_grad():
@@ -153,7 +153,7 @@ if __name__ == "__main__":
         thresholds = np.asarray(thresholds, dtype=np.float32).reshape(1, -1)
 
         device = next(model.parameters()).device
-        loader = build_loader(smiles, batch_size=batch_size)
+        loader = build_loader(smiles, batch_size=batch_size, to_fmt=False)
         tcids = []
         with torch.no_grad():
             for batch in loader:

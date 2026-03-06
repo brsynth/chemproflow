@@ -1,9 +1,16 @@
+from __future__ import annotations
+
 import hashlib
+import http.client
 import io
 import logging
+import random
+import socket
 import subprocess
+import time
 from typing import List, Tuple
 import urllib
+import urllib.error
 from urllib.request import Request, urlopen
 
 
@@ -52,25 +59,60 @@ def url_download(url: str, path: str) -> None:
         print(str(e))
 
 
-def url_download_to_memory(url: str) -> Tuple[io.BytesIO | None, int]:
-    retries = 3
+def url_download_to_memory(url: str, *, retries: int = 5, timeout: float = 30.0) -> Tuple[io.BytesIO | None, int]:
+    """
+    Download URL into memory.
+    Returns (BytesIO, 0) on success, else (None, error_code).
+
+    error_code conventions:
+      - HTTP status code (e.g., 404, 503) when available
+      - -1 for generic network/URL issues
+      - -2 for remote disconnected / connection dropped
+      - -3 for timeout
+    """
     error_code = 0
-    for _ in range(retries):
+
+    headers = {
+        # A more common UA than python-urllib; many servers block "botty" UAs.
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/123.0 Safari/537.36"
+        ),
+        "Accept": "*/*",
+        "Accept-Encoding": "gzip, deflate",
+        "Connection": "close",
+    }
+
+    for attempt in range(retries):
         try:
-            # User-Agent improves compatibility with some servers
-            req = Request(url, headers={"User-Agent": "python-urllib/3"})
-            with urlopen(req) as resp:
-                memory_buffer = io.BytesIO(resp.read())
-            memory_buffer.seek(0)
-            return memory_buffer, 0
+            req = Request(url, headers=headers)
+            with urlopen(req, timeout=timeout) as resp:
+                data = resp.read()  # urllib auto-decompresses gzip if Accept-Encoding set
+            buf = io.BytesIO(data)
+            buf.seek(0)
+            return buf, 0
+
         except urllib.error.HTTPError as e:
-            # Retry only on 5xx; otherwise return immediately
-            if 500 <= e.code <= 599:
+            # Retry only on typical transient codes
+            if e.code in (408, 425, 429) or (500 <= e.code <= 599):
                 error_code = e.code
-                continue
-            return None, e.code
+            else:
+                return None, e.code
+
+        except (socket.timeout, TimeoutError):
+            error_code = -3
+
+        except (http.client.RemoteDisconnected, ConnectionResetError, BrokenPipeError):
+            error_code = -2
+
         except urllib.error.URLError:
-            # Network/DNS issues—treat like retryable
+            # DNS, connection refused, etc.
             error_code = -1
-            continue
+
+        # Backoff before retry (except after last attempt)
+        if attempt < retries - 1:
+            backoff = min(8.0, 0.5 * (2 ** attempt))  # 0.5,1,2,4,8...
+            time.sleep(backoff + random.uniform(0, 0.2))
+
     return None, error_code

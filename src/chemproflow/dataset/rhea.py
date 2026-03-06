@@ -112,6 +112,14 @@ if __name__ == "__main__":
             df_overlap = pd.DataFrame(matrix, index=[x["chebi_id"] for x in ins], columns=[x["chebi_id"] for x in outs])
             if df_overlap.empty:
                 continue
+            print("-" * 100)
+            print("Rhea id:", rhea_id)
+            print("left sides:", left_sides)
+            print("right sides:", right_sides)
+            print("ins:", ins)
+            print("outs:", outs)
+            print("overlap")
+            print(df_overlap)
             df_overlap[df_overlap < 0.1] = 0.
             if df_overlap.max().max() == 0:
                 continue
@@ -125,6 +133,9 @@ if __name__ == "__main__":
                 for side in left_sides + right_sides:
                     if side.split(";")[0] in short_chebi_ids:
                         chebi_ids.add(side)
+            print("chebi ids")
+            print(chebi_ids)
+            print("-" * 100)
 
         if chebi_ids:
             data = dict(rhea_id=rhea_id, chebi_id="|".join(sorted(chebi_ids)))

@@ -70,10 +70,11 @@ def get_bond_features(bond):
         dtype=torch.float
     )
 
-def mol_to_graph(smiles):
-    smiles = fmt_smiles(smiles)
+def mol_to_graph(smiles, to_fmt: bool = True):
+    if to_fmt:
+        smiles = fmt_smiles(smiles)
     if len(smiles) < 1:
-        raise ValueError("Invalid SMILES:", smiles)
+        return None
     mol = Chem.MolFromSmiles(smiles)
 
     Chem.Kekulize(mol, clearAromaticFlags=True)
@@ -105,10 +106,15 @@ def mol_to_graph(smiles):
 
     return Data(x=x, edge_index=edge_index, edge_attr=edge_attr, smiles=smiles)
 
-def build_loader(smiles: List[str], batch_size: int, shuffle: bool = False) -> DataLoader:
+def build_loader(smiles: List[str], batch_size: int, to_fmt: bool, *args, **kwargs) -> DataLoader:
     graphs = []
-    for s in smiles:
-        g = mol_to_graph(smiles=s)
+    for idx, s in enumerate(smiles):
+        g = mol_to_graph(smiles=s, to_fmt=to_fmt)
+        if g is None:
+            continue
+        g.orig_idx = idx  # Keep original position for result alignment
         graphs.append(g)
-    loader = DataLoader(graphs, batch_size=batch_size, shuffle=shuffle)
+
+    kwargs.setdefault("shuffle", False)
+    loader = DataLoader(graphs, batch_size=batch_size, *args, **kwargs)
     return loader
