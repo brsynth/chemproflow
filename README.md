@@ -4,9 +4,9 @@
 
 ```bash
 # Create env
-conda create -n chemproflow jinja2 natsort optuna pandas rdkit tqdm seaborn
+conda create -n chemproflow jinja2 natsort "optuna=4.4.0" pandas "rdkit=2024.9.3" tqdm seaborn
 conda activate chemproflow
-pip install cmap iterative-stratification owlready2 pybiopax rdflib scikit-multilearn tensorboard lightning torch  torch_geometric torchmetrics
+pip install cmap "iterative-stratification==0.1.9" owlready2 pybiopax rdflib "scikit-multilearn==0.2.0" tensorboard "lightning==2.5.5" "torch==2.9.1" "torch_geometric==2.7.0" torchmetrics
 
 # Install ChemProFlow
 git clone git@github.com:brsynth/chemproflow.git
