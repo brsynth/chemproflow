@@ -7,6 +7,7 @@ from chemproflow.model.dataset import mol_to_graph
 from chemproflow.utils.misc import set_seed, write_json, write_pickle
 from chemproflow.model.wrap import WrapModel
 from chemproflow.pu.model import ModelTransport
+from chemproflow.utils.splitters import ScaffoldSplitter
 from lightning.pytorch.loggers import TensorBoardLogger
 import numpy as np
 import pandas as pd
@@ -71,6 +72,9 @@ if __name__ == "__main__":
         "--parameter-batch-size-int", default=128, type=int, help="Batch size"
     )
     parser.add_argument(
+        "--parameter-splitter-str", default="random", choices=["random", "splitter"], help="Splitter to use"
+    )
+    parser.add_argument(
         "--output-dir-str", required=True, help="Output directory"
     )
     args = parser.parse_args()
@@ -80,6 +84,7 @@ if __name__ == "__main__":
     kfold = args.parameter_kfold_int
     seed = args.parameter_seed_int
     batch_size = args.parameter_batch_size_int
+    splitter_params = args.parameter_splitter_str
     file_dataset_csv = args.input_dataset_csv
     
     os.makedirs(outdir, exist_ok=True)
@@ -94,47 +99,73 @@ if __name__ == "__main__":
     write_pickle(data=encoder, path=file_encoder_pkl)
 
     print("Build data points")
-    datas = []
+    df["graph"] = None
     for ix, row in tqdm(df.iterrows(), total=len(df)):
         graph = mol_to_graph(smiles=row["smiles"])  # should set x, edge_index, edge_attr
         # Use single-target binary label with shape [1]
         graph.y = torch.tensor(labels[ix], dtype=torch.float)
-        datas.append(graph)
+        df.at[ix, "graph"] = graph
 
     print("Build indices for cross validation")
-    all_indices = np.arange(len(datas))
+    if kfold < 2:
+        raise ValueError("--parameter-kfold-int must be >= 2")
 
-    # First create a single hold-out test split to avoid leakage across folds
-    train_indices_all, test_indices = train_test_split(
-        all_indices,
-        test_size=0.2,
-        random_state=seed,
-        stratify=labels,
-    )
+    if splitter_params == "random":
+        all_indices = np.arange(len(df))
 
-    # Test dataset
-    test_indices = test_indices.tolist()
-    test_datas = [datas[ix] for ix in test_indices]
-    torch.save(test_datas, os.path.join(outdir, f"test.pt"))
-    test_loader = DataLoader(test_datas, batch_size=batch_size, shuffle=False)
+        # First create a single hold-out test split to avoid leakage across folds
+        train_indices_all, test_indices = train_test_split(
+            all_indices,
+            test_size=0.2,
+            random_state=seed,
+            stratify=labels,
+        )
+
+        # Test dataset
+        test_indices = test_indices.tolist()
+        test_datas = [df.loc[ix, "graph"] for ix in test_indices]
+        torch.save(test_datas, os.path.join(outdir, f"test.pt"))
+        test_loader = DataLoader(test_datas, batch_size=batch_size, shuffle=False)
+
+        skf = StratifiedKFold(n_splits=kfold, shuffle=True, random_state=seed)
+        split_iterator = skf.split(train_indices_all, labels[train_indices_all])
+        loop_over_split = (
+            (
+                fold_idx,
+                train_indices_all[train_pos].tolist(),
+                train_indices_all[val_pos].tolist(),
+            )
+            for fold_idx, (train_pos, val_pos) in enumerate(split_iterator)
+        )
+    elif splitter_params == "splitter":
+        scaffold_splitter = ScaffoldSplitter()
+        train_indices_all, _, test_indices = scaffold_splitter.split(
+            df=df,
+            frac_train=0.8,
+            frac_valid=0.0,
+            frac_test=0.2,
+        )
+        test_datas = [df.loc[ix, "graph"] for ix in test_indices]
+        torch.save(test_datas, os.path.join(outdir, f"test.pt"))
+        test_loader = DataLoader(test_datas, batch_size=batch_size, shuffle=False)
+        train_df = df.loc[train_indices_all]
+        loop_over_split = scaffold_splitter.k_fold_split(df=train_df, k=kfold)
+    else:
+        raise ValueError("Splitter parameter unknown")
     
-    skf = StratifiedKFold(n_splits=kfold, shuffle=True, random_state=seed)
-
     fold_metrics = []
     stats = {}
-    for fold_idx, (train_pos, val_pos) in enumerate(
-        skf.split(train_indices_all, labels[train_indices_all])
-    ):
+    for fold_idx, train_pos, val_pos in loop_over_split:
         print(f"=== Fold {fold_idx} / {kfold} ===")
 
         outdir_kfold = os.path.join(outdir, f"kfold-{fold_idx}")
         os.makedirs(outdir_kfold, exist_ok=True)
 
-        train_indices = train_indices_all[train_pos].tolist()
-        val_indices = train_indices_all[val_pos].tolist()
+        train_indices = list(train_pos)
+        val_indices = list(val_pos)
 
-        train_datas = [datas[ix] for ix in train_indices]
-        valid_datas = [datas[ix] for ix in val_indices]
+        train_datas = [df.loc[ix, "graph"] for ix in train_indices]
+        valid_datas = [df.loc[ix, "graph"] for ix in val_indices]
 
         torch.save(train_datas, os.path.join(outdir_kfold, f"train.pt"))
         torch.save(valid_datas, os.path.join(outdir_kfold, f"valid.pt"))
@@ -158,8 +189,8 @@ if __name__ == "__main__":
         fold_pos_prior = float(labels[train_indices].mean()) if len(train_indices) else 0.0
 
         model = ModelTransport(
-            node_feat_dim=datas[0].x.shape[1],
-            edge_feat_dim=datas[0].edge_attr.shape[1],
+            node_feat_dim=df.iloc[0]["graph"].x.shape[1],
+            edge_feat_dim=df.iloc[0]["graph"].edge_attr.shape[1],
             hidden_dim=300,
             num_classes=1,
             lr=1e-3,
