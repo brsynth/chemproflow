@@ -14,26 +14,24 @@ with open(fversion) as fid:
 
 # App name - dependencies
 env = {}
-"""
 with open("recipes/workflow.yaml") as fid:
     env = yaml.safe_load(fid)
-"""
 install_requires = []
-"""
 for package in env["dependencies"]:
     if isinstance(package, dict):
         package = package.get("pip", [])
         install_requires += package
     else:
         install_requires.append(package)
-"""
-description = "Retrosynthesis"
+description = (
+    "End-to-end mapping of membrane transport from chemical structure to microorganisms"
+)
 
 setuptools.setup(
     name=name,
     version=version,
     author=["guillaume-gricourt"],
-    author_email=["guipagui@gmail.com"],
+    author_email=["guillaume.gricourt@inrae.fr"],
     description=description,
     long_description_content_type="text/markdown",
     url="https://github.com/brsynth/chemproflow",
@@ -46,4 +44,7 @@ setuptools.setup(
         "Operating System :: OS Independent",
     ],
     install_requires=install_requires,
+    entry_points={
+        "console_scripts": ["chemproflow=chemproflow.pipeline.__main__:main"]
+    },
 )
