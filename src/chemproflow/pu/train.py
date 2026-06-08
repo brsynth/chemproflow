@@ -130,18 +130,38 @@ if __name__ == "__main__":
         outdir_kfold = os.path.join(outdir, f"kfold-{fold_idx}")
         os.makedirs(outdir_kfold, exist_ok=True)
 
-        train_indices = train_indices_all[train_pos].tolist()
+        fold_train_indices = train_indices_all[train_pos]
         val_indices = train_indices_all[val_pos].tolist()
 
+        fold_train_labels = labels[fold_train_indices]
+        positive_train_indices = fold_train_indices[fold_train_labels == 1]
+        if len(positive_train_indices) < 2:
+            raise ValueError(
+                f"Fold {fold_idx} has fewer than two positive training samples; "
+                "cannot create an Elkan-Noto calibration split."
+            )
+
+        _, calibration_indices = train_test_split(
+            positive_train_indices,
+            test_size=0.2,
+            random_state=seed + fold_idx,
+        )
+        train_indices = np.setdiff1d(fold_train_indices, calibration_indices).tolist()
+        calibration_indices = calibration_indices.tolist()
+
         train_datas = [datas[ix] for ix in train_indices]
+        calibration_datas = [datas[ix] for ix in calibration_indices]
         valid_datas = [datas[ix] for ix in val_indices]
 
         torch.save(train_datas, os.path.join(outdir_kfold, f"train.pt"))
+        torch.save(calibration_datas, os.path.join(outdir_kfold, f"calibration.pt"))
         torch.save(valid_datas, os.path.join(outdir_kfold, f"valid.pt"))
 
         stats_fold = {}
         stats_fold["train"] = count_labels(datas=train_datas)
         stats_fold["train"]["total"] = len(train_datas)
+        stats_fold["calibration"] = count_labels(datas=calibration_datas)
+        stats_fold["calibration"]["total"] = len(calibration_datas)
         stats_fold["valid"] = count_labels(datas=valid_datas)
         stats_fold["valid"]["total"] = len(valid_datas)
         stats_fold["test"] = count_labels(datas=test_datas)
@@ -151,6 +171,7 @@ if __name__ == "__main__":
 
         print("Make loader")
         train_loader = DataLoader(train_datas, batch_size=batch_size, shuffle=True)
+        calibration_loader = DataLoader(calibration_datas, batch_size=batch_size, shuffle=False)
         val_loader = DataLoader(valid_datas, batch_size=batch_size, shuffle=False)
 
         print("Build model")
@@ -166,6 +187,7 @@ if __name__ == "__main__":
             pos_prior=fold_pos_prior,
             pu_type='elkan-noto',
         )
+        model.set_elkan_calibration_loader(calibration_loader)
         wrap_model = WrapModel(model=model)
 
         print("Fit")
@@ -177,6 +199,7 @@ if __name__ == "__main__":
             logger=tb_logger,
         )
 
+        model.estimate_elkan_c(calibration_loader)
         print("Test")
         wrap_model.test(test_loader=test_loader)
 

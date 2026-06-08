@@ -21,7 +21,7 @@ class ModelTransport(pl.LightningModule):
         self.test_precision = BinaryPrecision()
         self.test_recall = BinaryRecall()
         self.register_buffer('elkan_c', torch.tensor(1.0))
-        self._val_pos_probs = []
+        self.elkan_calibration_loader = None
         self.score_monitor = 'val/binary-f1'
 
     def graph_embedding(self, data):
@@ -34,6 +34,31 @@ class ModelTransport(pl.LightningModule):
     def _correct_probs(self, probs: torch.Tensor) -> torch.Tensor:
         c = torch.clamp(self.elkan_c, min=1e-6)
         return torch.clamp(probs / c, max=1.0)
+
+    def set_elkan_calibration_loader(self, loader):
+        self.elkan_calibration_loader = loader
+
+    def estimate_elkan_c(self, loader):
+        was_training = self.training
+        self.eval()
+        pos_probs = []
+        device = self.elkan_c.device
+        with torch.no_grad():
+            for batch in loader:
+                batch = batch.to(device)
+                y = batch.y.float()
+                if not (y == 1).any():
+                    continue
+                logits = self(batch).squeeze(-1)
+                probs = torch.sigmoid(logits)
+                pos_probs.append(probs[y == 1].detach())
+        if was_training:
+            self.train()
+        if not pos_probs:
+            raise ValueError("Cannot estimate Elkan-Noto c: calibration split has no positive labels.")
+        c_hat = torch.cat(pos_probs).mean().to(device)
+        self.elkan_c.copy_(torch.clamp(c_hat, min=1e-6))
+        return self.elkan_c
 
     def training_step(self, batch, batch_idx):
         logits = self(batch).squeeze(-1)
@@ -48,23 +73,23 @@ class ModelTransport(pl.LightningModule):
         y = batch.y.float()
         loss = self.bce(logits, y)
         probs = torch.sigmoid(logits)
-        if (y == 1).any():
-            self._val_pos_probs.append(probs[y == 1].detach().cpu())
         corrected = self._correct_probs(probs)
         self.f1.update(corrected, y.int())
         self.log('valid_loss', loss, prog_bar=False, batch_size=y.size(0))
         return loss
 
+    def on_validation_epoch_start(self):
+        if self.trainer is not None and self.trainer.sanity_checking:
+            return
+        if self.elkan_calibration_loader is None:
+            return
+        c_hat = self.estimate_elkan_c(self.elkan_calibration_loader)
+        self.log('elkan_c', c_hat, prog_bar=True)
+
     def on_validation_epoch_end(self):
-        if self._val_pos_probs:
-            pos_probs = torch.cat(self._val_pos_probs)
-            c_hat = pos_probs.mean().to(self.elkan_c.device)
-            self.elkan_c.copy_(c_hat)
-            self.log('elkan_c', self.elkan_c, prog_bar=True)
         f1 = self.f1.compute()
         self.log('val/binary-f1', f1, prog_bar=True)
         self.f1.reset()
-        self._val_pos_probs.clear()
 
     def test_step(self, batch, batch_idx):
         logits = self(batch).squeeze(-1)
