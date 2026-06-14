@@ -1,0 +1,63 @@
+{% set name = "chemproflow" %}
+{% set version = "1.1.0" %}
+
+package:
+  name: {{ name }}
+  version: {{ version }}
+
+source:
+  url: https://github.com/brsynth/{{ name }}/archive/{{ version }}.tar.gz
+  sha256: 3e2876d74ec613be2f8d1bceffae7a0407f8885ca299f4d134faa7c6be727541 # wget -O- | shasum -a 256
+  #path: ../
+
+build:
+  number: 0
+  noarch: python
+  script: {{ PYTHON }} -m pip install -vv .
+  entry_points:
+    - {{ name }}={{ name }}.pipeline.__main__:main
+
+requirements:
+  build:
+    - pip
+    - python
+    - pyyaml
+    - setuptools
+  run:
+    - python
+    - blast==2.16.0
+    - cmap
+    - iterative-stratification=0.1.9
+    - jinja2
+    - lightning=2.5.5
+    - natsort
+    - optuna=4.4.0
+    - owlready2
+    - pandas
+    - pybiopax
+    - pytorch=2.9.1
+    - pytorch_geometric=2.7.0
+    - rdflib
+    - rdkit=2024.9.3
+    - scikit-learn=1.7.2
+    - scikit-multilearn=0.2.0
+    - seaborn
+    - tensorboard
+    - torchmetrics
+    - tqdm
+
+test:
+  imports:
+    - {{ name }}
+  commands:
+    - {{ name }} --help
+
+about:
+  home: https://github.com/brsynth/{{ name }}
+  summary: End-to-end mapping of membrane transport from chemical structure to microorganisms
+  license: MIT
+  license_file: LICENSE
+
+extra:
+  recipe-maintainers:
+    - guillaume-gricourt
