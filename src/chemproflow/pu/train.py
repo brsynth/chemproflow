@@ -22,7 +22,7 @@ from sklearn.metrics import (
 from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.preprocessing import OrdinalEncoder
 import torch
-from torch_geometric.data import DataLoader
+from torch_geometric.loader import DataLoader
 from tqdm import tqdm
 
 
@@ -129,7 +129,7 @@ if __name__ == "__main__":
 
         skf = StratifiedKFold(n_splits=kfold, shuffle=True, random_state=seed)
         split_iterator = skf.split(train_indices_all, labels[train_indices_all])
-        loop_over_split = (
+        split_iterator = (
             (
                 fold_idx,
                 train_indices_all[train_pos].tolist(),
@@ -149,13 +149,13 @@ if __name__ == "__main__":
         torch.save(test_datas, os.path.join(outdir, f"test.pt"))
         test_loader = DataLoader(test_datas, batch_size=batch_size, shuffle=False)
         train_df = df.loc[train_indices_all]
-        loop_over_split = scaffold_splitter.k_fold_split(df=train_df, k=kfold)
+        split_iterator = scaffold_splitter.k_fold_split(df=train_df, k=kfold)
     else:
         raise ValueError("Splitter parameter unknown")
     
     fold_metrics = []
     stats = {}
-    for fold_idx, train_pos, val_pos in loop_over_split:
+    for fold_idx, train_pos, val_pos in split_iterator:
         print(f"=== Fold {fold_idx} / {kfold} ===")
 
         outdir_kfold = os.path.join(outdir, f"kfold-{fold_idx}")
@@ -233,10 +233,6 @@ if __name__ == "__main__":
 
         ths = np.linspace(0.01, 0.99, 99)
 
-        c_hat_model = float(getattr(model, 'elkan_c', torch.tensor(1.0)).item())
-        if c_hat_model <= 0:
-            c_hat_model = 1.0
-
         test_probs, test_y = [], []
         with torch.no_grad():
             for batch in test_loader:
@@ -249,7 +245,7 @@ if __name__ == "__main__":
         test_probs = np.concatenate(test_probs)
         test_y = np.concatenate(test_y).astype(int)
 
-        test_corrected = np.clip(test_probs / c_hat_model, 0.0, 1.0)
+        test_corrected = np.clip(test_probs / c_hat, 0.0, 1.0)
         torch.save(test_corrected, os.path.join(outdir_kfold, f"test_corrected.pt"))
         torch.save(test_y, os.path.join(outdir_kfold, f"test_y.pt"))
         ece_uncalibrated = expected_calibration_error(test_corrected, test_y)
@@ -260,7 +256,7 @@ if __name__ == "__main__":
         val_dirichlet_features = dirichlet_feature_map(val_corrected)
         dirichlet_clf.fit(val_dirichlet_features, val_y)
         val_dirichlet_probs = dirichlet_clf.predict_proba(val_dirichlet_features)[:, 1]
-        f1s_dir = [f1_score(val_y, (val_dirichlet_probs >= t).astype(int)) for t in ths]
+        f1s_dir = [f1_score(val_y, (val_dirichlet_probs >= t).astype(int), zero_division=0) for t in ths]
         best_idx_dir = int(np.argmax(f1s_dir))
         best_th_dir = float(ths[best_idx_dir])
         best_f1_dir = float(f1s_dir[best_idx_dir])
@@ -276,7 +272,7 @@ if __name__ == "__main__":
         classif_report = classification_report(test_y, test_pred_dir, digits=3, output_dict=True)
         roc_auc_dir = float(roc_auc_score(test_y, test_dirichlet_probs))
         pr_auc_dir = float(average_precision_score(test_y, test_dirichlet_probs))
-        test_f1_dir = float(f1_score(test_y, test_pred_dir))
+        test_f1_dir = float(f1_score(test_y, test_pred_dir, zero_division=0))
         brier_dir = float(brier_score_loss(test_y, test_dirichlet_probs))
         torch.save(test_dirichlet_probs, os.path.join(outdir_kfold, f"test_dirichlet_probs.pt"))
         ece_dir = expected_calibration_error(test_dirichlet_probs, test_y)
