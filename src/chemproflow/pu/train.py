@@ -163,8 +163,8 @@ if __name__ == "__main__":
         outdir_kfold = os.path.join(outdir, f"kfold-{fold_idx}")
         os.makedirs(outdir_kfold, exist_ok=True)
 
-        fold_train_indices = train_indices_all[train_pos]
-        val_indices = train_indices_all[val_pos].tolist()
+        fold_train_indices = np.array(train_pos)
+        val_indices = list(val_pos)
 
         fold_train_labels = labels[fold_train_indices]
         positive_train_indices = fold_train_indices[fold_train_labels == 1]
@@ -182,9 +182,9 @@ if __name__ == "__main__":
         train_indices = np.setdiff1d(fold_train_indices, calibration_indices).tolist()
         calibration_indices = calibration_indices.tolist()
 
-        train_datas = [datas[ix] for ix in train_indices]
-        calibration_datas = [datas[ix] for ix in calibration_indices]
-        valid_datas = [datas[ix] for ix in val_indices]
+        train_datas = [df.loc[ix, "graph"] for ix in train_indices]
+        calibration_datas = [df.loc[ix, "graph"] for ix in calibration_indices]
+        valid_datas = [df.loc[ix, "graph"] for ix in val_indices]
 
         torch.save(train_datas, os.path.join(outdir_kfold, f"train.pt"))
         torch.save(calibration_datas, os.path.join(outdir_kfold, f"calibration.pt"))
