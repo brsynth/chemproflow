@@ -1,0 +1,275 @@
+{% set app_name = context.app_name | default(app_name, true) | default('ChemProFlow') %}
+{% set app_version = context.app_version | default(app_version, true) %}
+{% set page_title = context.page_title | default(page_title, true) | default('Report') %}
+{% set theme = context.theme | default(theme, true) | default('light') %}
+{% set accent_color = context.accent_color | default(accent_color, true) | default('#0d6efd') %}
+{% set generated_at = context.generated_at | default(generated_at, true) | default('') %}
+{% set samples = context.samples | default(samples, true) | default([], true) %}
+{% set summary = context.summary | default(summary, true) %}
+{% set table = context.table | default(table, true) %}
+{% set figures = context.figures | default(figures, true) %}
+{% set report_id = context.report_id | default(report_id, true) %}
+{% set build_sha = context.build_sha | default(build_sha, true) %}
+
+<!doctype html>
+<html lang="en" data-theme="{{ theme }}">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Report produced by {{ app_name }}" />
+    <meta name="author" content="{{ app_name }}" />
+    <title>{{ app_name }} — {{ page_title }}</title>
+
+    <!-- Bootstrap 5 -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+    <!-- Bootstrap Icons -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet" />
+    <!-- Inter font -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+
+    <style>
+      :root { --cf-accent: {{ accent_color }}; }
+      html, body { height: 100%; }
+      body { font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"; }
+
+      .brand-chip { display:inline-flex; align-items:center; gap:.5rem; padding:.4rem .7rem; border-radius:999px; background:var(--cf-accent); color:#fff; font-weight:600; }
+      .brand-chip .dot { width:.5rem; height:.5rem; border-radius:50%; background:#fff; opacity:.9; }
+
+      .page-subtle { color: var(--bs-secondary-color); }
+      .section-title { font-size:1.1rem; font-weight:600; letter-spacing:.2px; margin-bottom:.75rem; }
+
+      /* Stat cards */
+      .stat-card { border:1px solid var(--bs-border-color); border-radius:1rem; background:#fff; }
+      .stat-card .icon { width:42px; height:42px; display:grid; place-items:center; border-radius:.75rem; background:rgba(13,110,253,.08); color:var(--cf-accent); }
+
+      /* Sample blocks */
+      .sample-card { border:1px solid var(--bs-border-color); border-radius:1rem; background:#fff; }
+      .sample-header { border-bottom:1px solid var(--bs-border-color); padding:1rem 1.25rem; }
+      .sample-body { padding:1.25rem; }
+      .molecule-card { border:1px solid var(--bs-border-color); border-radius:1rem; background:#fff; }
+      .molecule-art { padding:1.25rem; display:flex; align-items:center; justify-content:center; min-height:260px; }
+      .molecule-art svg { width:100% !important; height:auto !important; }
+
+      /* Meta list */
+      .meta dt { font-size:.72rem; letter-spacing:.08em; text-transform:uppercase; color:var(--bs-secondary-color); margin-bottom:.2rem; }
+      .meta dd { margin-bottom:1rem; }
+      .meta dd:last-of-type { margin-bottom:0; }
+      .meta code { font-size:.85rem; }
+
+      .badge-yes { background: rgba(25, 135, 84, .12); color:#198754; border:1px solid rgba(25,135,84,.25); }
+      .badge-no { background: rgba(220, 53, 69, .12); color:#dc3545; border:1px solid rgba(220,53,69,.25); }
+      .badge-unk { background: rgba(108,117,125,.12); color:#6c757d; border:1px solid rgba(108,117,125,.25); }
+
+      /* Tables */
+      table.cf-table { font-feature-settings: "tnum" 1, "lnum" 1; }
+      table.cf-table th { position: sticky; top: 0; background: #f8f9fa; z-index: 1; }
+      .table-wrap { max-height: 60vh; overflow: auto; border:1px solid var(--bs-border-color); border-radius:.75rem; background:#fff; }
+      tbody tr:hover { background: rgba(13,110,253,.04); }
+
+      /* Code */
+      pre, code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size:.9rem; }
+      pre { background:#0f172a; color:#e2e8f0; border-radius:.5rem; padding:1rem; }
+
+      /* Print */
+      @media print {
+        .no-print { display:none !important; }
+        .table-wrap { max-height: unset; overflow: visible; }
+        table.cf-table th { position: static; }
+        a[href]:after { content: "" !important; }
+        body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      }
+
+      /* Optional dark mode tweak (if you set data-theme="dark") */
+      [data-theme="dark"] body { background:#0b0f14; color:#d0d6dc; }
+      [data-theme="dark"] .stat-card, [data-theme="dark"] .sample-card, [data-theme="dark"] .molecule-card, [data-theme="dark"] .table-wrap { background:#0f131a; border-color:#1f2833; }
+      [data-theme="dark"] table.cf-table th { background:#121823; }
+    </style>
+
+    {% block styles %}{% endblock %}
+  </head>
+    <body class="bg-body-tertiary">
+        <header class="container py-4">
+            <div class="d-flex flex-wrap align-items-center justify-content-between gap-3">
+                <div class="d-flex align-items-center gap-3 mt-2 mb-2">
+                    <h1>{{ app_name }} - {{ app_version }}</h1>
+                </div>
+            </div>
+            <div class="d-flex flex-wrap align-items-center gap-3">
+                <h3>Databases</h3>
+            </div>
+            <div class="d-flex flex-wrap align-items-center gap-3 mb-2">
+                <dl class="row meta mb-0">
+                    <dt>
+                        <a href="https://www.uniprot.org">Uniprot</a>
+                    </dt>
+                    <dt>
+                        <a href="https://www.tcdb.org">TCDB</a>
+                    </dt>
+                </dl>
+            </div>
+        </header>
+
+    <main class="container pb-5">
+      {% for sample in samples %}
+        {% set sample_name = sample.name | default(sample.sample_name, true) %}
+        {% set sample_smiles = sample.smiles | default(sample.sample_smiles, true) %}
+        {% set sample_weight = sample.weight | default(sample.sample_weight, true) %}
+        {% set sample_svg = sample.svg | default(sample.sample_svg, true) %}
+        {% set sample_is_transported = sample.is_transported | default(sample.sample_is_transported, true) %}
+        {% set sample_dataset_transport = sample.dataset_transport | default(sample.sample_dataset_transport, true) %}
+        {% set sample_pred_transport = sample.pred_transport %}
+        {% set sample_pred_tcids = sample.pred_tcids %}
+        {% set sample_prot_tcids = sample.prot_tcids %}
+        {% set sample_similar_substrates_svg = sample.similar_substrates_svg %}
+        {% set sample_name_micro_organisms = sample.name_micro_organisms %}
+
+        <section class="mb-4">
+          <div class="row g-4 align-items-stretch">
+            <div class="col-12 col-lg-6">
+                <article class="sample-card shadow-sm h-100">
+                    <div class="sample-header d-flex justify-content-between align-items-center">
+                        <h2 class="h5 mb-0">{{ sample_name }}</h2>
+                    </div>
+                    <div class="sample-body">
+                        <div class="row g-3 mb-2">
+                            <div class="col-12 ">
+                                <dl class="row meta mb-0">
+                                    {% if sample_smiles %}
+                                    <dt class="col-4">SMILES</dt>
+                                    <dd class="col-8"><code class="text-break">{{ sample_smiles }}</code></dd>
+                                    {% endif %}
+                        
+                                    {% if sample_weight %}
+                                    <dt class="col-4">Molecular mass</dt>
+                                    <dd class="col-8 text-secondary">{{ sample_weight }} <span class="text-body-tertiary">Da</span></dd>
+                                    {% endif %}
+                        
+                                    {% if sample_is_transported is not none %}
+                                    <dt class="col-4">Should be transported</dt>
+                                    <dd class="col-8">
+                                        {% set v = sample_is_transported|string|lower %}
+                                        <span
+                                            class="badge {{ 'badge-yes' if v in ['1','true','yes','y', 'positive'] else ('badge-no' if v in ['0','false','no','n', 'negative'] else 'badge-unk') }}">{{
+                                            'Yes' if v in ['1','true','yes','y', 'positive'] else ('No' if v in ['0','false','no','n',
+                                            'negative'] else 'Unknown') }}</span>
+                                    </dd>
+                                    {% endif %}
+                                </dl>
+                            </div>
+                        </div>
+                        <figure class="molecule-card shadow-sm h-100">
+                            <div class="molecule-art">{{ sample_svg | safe }}</div>
+                        </figure>
+                    </div>
+                </article>
+            </div>
+            <div class="col-12 col-lg-6">
+              <article class="sample-card shadow-sm h-100">
+                <div class="sample-header d-flex justify-content-between align-items-center">
+                  <h2 class="h5 mb-0">{{ sample_name }}</h2>
+                </div>
+                <div class="sample-body">
+                  <div class="row g-3">
+                    <div class="col-12">
+                      <dl class="row meta mb-0">
+                        {% if sample_pred_transport is not none %}
+                        <dt class="col-4">Predicted transport</dt>
+                        <dd class="col-8">
+                          {% set v = sample_pred_transport|string|lower %}
+                          <span class="badge {{ 'badge-yes' if v in ['1','true','yes','y'] else ('badge-no' if v in ['0','false','no','n'] else 'badge-unk') }}">{{ 'Yes' if v in ['1','true','yes','y'] else ('No' if v in ['0','false','no','n'] else 'Unknown') }}</span>
+                        </dd>
+                        {% endif %}
+
+                        {% if sample_similar_substrates_svg %}
+                        <h2 class="section-title mt-3">Similar substrates associated to TCID</h2>
+                        <div class="table-wrap shadow-sm">
+                            <table class="table table-sm table-hover align-middle mb-0 cf-table">
+                                <thead>
+                                    <tr>
+                                        <th scope="col" class="text-nowrap">TCID</th>
+                                        <th scope="col" class="text-nowrap">Similar substrates</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for tcid, svg in zip(sample_pred_tcids, sample_similar_substrates_svg) %}
+                                    <tr>
+                                        <td class="text-nowrap">
+                                            {{ tcid }}
+                                        </td>
+                                        <td class="text-nowrap">
+                                            <figure class="molecule-card shadow-sm h-100">
+                                                <div class="molecule-art">{{ svg | safe }}</div>
+                                            </figure>
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                        {% endif %}
+
+                        {% if sample_prot_tcids %}
+                        <h2 class="section-title mt-3">Proteins associated to TCID</h2>
+                        <div class="table-wrap shadow-sm">
+                            <table class="table table-sm table-hover align-middle mb-0 cf-table">
+                                <thead>
+                                    <tr>
+                                        <th scope="col" class="text-nowrap">TCID</th>
+                                        <th scope="col" class="text-nowrap">Uniprot</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for row in sample_prot_tcids %}
+                                    <tr>
+                                        <td class="text-nowrap">{{ row[1] }}</td>
+                                        <td class="text-nowrap">
+                                            <a href="https://www.uniprot.org/uniprotkb/{{ row[0] }}/entry">{{ row[0] }}</a>
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                        {% endif %}
+
+                        {% if sample_name_micro_organisms %}
+                        <h2 class="section-title mt-3">Micro-organisms associated to TCID</h2>
+                        <div class="table-wrap shadow-sm">
+                            <table class="table table-sm table-hover align-middle mb-0 cf-table">
+                                <thead>
+                                    <tr>
+                                        <th scope="col" class="text-nowrap">TCID</th>
+                                        <th scope="col" class="text-nowrap">Micro-organisms</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for tcid, names in zip(sample_pred_tcids, sample_name_micro_organisms) %}
+                                    <tr>
+                                        <td class="text-nowrap">{{ tcid }}</td>
+                                        <td class="text-nowrap">{{ ", ".join(names) }}</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                        {% endif %}
+                      </dl>
+                    </div>
+                  </div>
+                </div>
+              </article>
+            </div>
+          </div>
+        </section>
+      {% endfor %}
+    </main>
+
+    <footer class="container py-4 border-top text-secondary small">
+      <div class="d-flex flex-wrap gap-2 align-items-center justify-content-between">
+        <span>© {{ (generated_at|string)[:4] or '' }} {{ app_name }}.</span>
+      </div>
+    </footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" defer></script>
+  </body>
+</html>
