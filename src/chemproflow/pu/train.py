@@ -7,6 +7,7 @@ from chemproflow.model.dataset import mol_to_graph
 from chemproflow.utils.misc import set_seed, write_json, write_pickle
 from chemproflow.model.wrap import WrapModel
 from chemproflow.pu.model import ModelTransport
+from chemproflow.utils.splitters import ScaffoldSplitter
 from lightning.pytorch.loggers import TensorBoardLogger
 import numpy as np
 import pandas as pd
@@ -21,7 +22,7 @@ from sklearn.metrics import (
 from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.preprocessing import OrdinalEncoder
 import torch
-from torch_geometric.data import DataLoader
+from torch_geometric.loader import DataLoader
 from tqdm import tqdm
 
 
@@ -56,23 +57,24 @@ def dirichlet_feature_map(probabilities, eps=1e-6):
     probs = np.clip(probabilities, eps, 1 - eps)
     return np.column_stack((np.log(probs), np.log(1 - probs), probs))
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--input-dataset-csv", required=True, help="Dataset")
     parser.add_argument(
-        "--input-dataset-csv", required=True, help="Dataset"
+        "--parameter-kfold-int", default=5, type=int, help="Count K-Fold"
     )
-    parser.add_argument(
-        "--parameter-kfold-int", default= 5, type=int, help="Count K-Fold"
-    )
-    parser.add_argument(
-        "--parameter-seed-int", default=42, type=int, help="Seed"
-    )
+    parser.add_argument("--parameter-seed-int", default=42, type=int, help="Seed")
     parser.add_argument(
         "--parameter-batch-size-int", default=128, type=int, help="Batch size"
     )
     parser.add_argument(
-        "--output-dir-str", required=True, help="Output directory"
+        "--parameter-splitter-str",
+        default="random",
+        choices=["random", "splitter"],
+        help="Splitter to use",
     )
+    parser.add_argument("--output-dir-str", required=True, help="Output directory")
     args = parser.parse_args()
 
     # Init
@@ -80,51 +82,82 @@ if __name__ == "__main__":
     kfold = args.parameter_kfold_int
     seed = args.parameter_seed_int
     batch_size = args.parameter_batch_size_int
+    splitter_params = args.parameter_splitter_str
     file_dataset_csv = args.input_dataset_csv
-    
+
     os.makedirs(outdir, exist_ok=True)
     set_seed(seed, workers=True)
 
-    df = pd.read_csv(file_dataset_csv) # columns: ["smiles", "label"]
+    df = pd.read_csv(file_dataset_csv)  # columns: ["smiles", "label"]
 
     print("Encode labels")
-    encoder = OrdinalEncoder(categories=[["unlabeled", "positive"]]) ## Encode labels with scikit-learn to ensure positive=1 and unlabeled=0
+    encoder = OrdinalEncoder(
+        categories=[["unlabeled", "positive"]]
+    )  ## Encode labels with scikit-learn to ensure positive=1 and unlabeled=0
     labels = encoder.fit_transform(df[["label"]]).astype(int).ravel()
     file_encoder_pkl = os.path.join(outdir, "encoder.pkl")
     write_pickle(data=encoder, path=file_encoder_pkl)
 
     print("Build data points")
-    datas = []
+    df["graph"] = None
     for ix, row in tqdm(df.iterrows(), total=len(df)):
-        graph = mol_to_graph(smiles=row["smiles"])  # should set x, edge_index, edge_attr
+        graph = mol_to_graph(
+            smiles=row["smiles"]
+        )  # should set x, edge_index, edge_attr
         # Use single-target binary label with shape [1]
         graph.y = torch.tensor(labels[ix], dtype=torch.float)
-        datas.append(graph)
+        df.at[ix, "graph"] = graph
 
     print("Build indices for cross validation")
-    all_indices = np.arange(len(datas))
+    if kfold < 2:
+        raise ValueError("--parameter-kfold-int must be >= 2")
 
-    # First create a single hold-out test split to avoid leakage across folds
-    train_indices_all, test_indices = train_test_split(
-        all_indices,
-        test_size=0.2,
-        random_state=seed,
-        stratify=labels,
-    )
+    if splitter_params == "random":
+        all_indices = np.arange(len(df))
 
-    # Test dataset
-    test_indices = test_indices.tolist()
-    test_datas = [datas[ix] for ix in test_indices]
-    torch.save(test_datas, os.path.join(outdir, f"test.pt"))
-    test_loader = DataLoader(test_datas, batch_size=batch_size, shuffle=False)
-    
-    skf = StratifiedKFold(n_splits=kfold, shuffle=True, random_state=seed)
+        # First create a single hold-out test split to avoid leakage across folds
+        train_indices_all, test_indices = train_test_split(
+            all_indices,
+            test_size=0.2,
+            random_state=seed,
+            stratify=labels,
+        )
+
+        # Test dataset
+        test_indices = test_indices.tolist()
+        test_datas = [df.loc[ix, "graph"] for ix in test_indices]
+        torch.save(test_datas, os.path.join(outdir, f"test.pt"))
+        test_loader = DataLoader(test_datas, batch_size=batch_size, shuffle=False)
+
+        skf = StratifiedKFold(n_splits=kfold, shuffle=True, random_state=seed)
+        split_iterator = skf.split(train_indices_all, labels[train_indices_all])
+        split_iterator = (
+            (
+                fold_idx,
+                train_indices_all[train_pos].tolist(),
+                train_indices_all[val_pos].tolist(),
+            )
+            for fold_idx, (train_pos, val_pos) in enumerate(split_iterator)
+        )
+    elif splitter_params == "splitter":
+        scaffold_splitter = ScaffoldSplitter()
+        train_indices_all, _, test_indices = scaffold_splitter.split(
+            df=df,
+            frac_train=0.8,
+            frac_valid=0.0,
+            frac_test=0.2,
+        )
+        test_datas = [df.loc[ix, "graph"] for ix in test_indices]
+        torch.save(test_datas, os.path.join(outdir, f"test.pt"))
+        test_loader = DataLoader(test_datas, batch_size=batch_size, shuffle=False)
+        train_df = df.loc[train_indices_all]
+        split_iterator = scaffold_splitter.k_fold_split(df=train_df, k=kfold)
+    else:
+        raise ValueError("Splitter parameter unknown")
 
     fold_metrics = []
     stats = {}
-    for fold_idx, (train_pos, val_pos) in enumerate(
-        skf.split(train_indices_all, labels[train_indices_all])
-    ):
+    for fold_idx, train_pos, val_pos in split_iterator:
         print(f"=== Fold {fold_idx} / {kfold} ===")
 
         outdir_kfold = os.path.join(outdir, f"kfold-{fold_idx}")
@@ -171,21 +204,25 @@ if __name__ == "__main__":
 
         print("Make loader")
         train_loader = DataLoader(train_datas, batch_size=batch_size, shuffle=True)
-        calibration_loader = DataLoader(calibration_datas, batch_size=batch_size, shuffle=False)
+        calibration_loader = DataLoader(
+            calibration_datas, batch_size=batch_size, shuffle=False
+        )
         val_loader = DataLoader(valid_datas, batch_size=batch_size, shuffle=False)
 
         print("Build model")
         # Estimate positive prior using only the training portion of the current fold
-        fold_pos_prior = float(labels[train_indices].mean()) if len(train_indices) else 0.0
+        fold_pos_prior = (
+            float(labels[train_indices].mean()) if len(train_indices) else 0.0
+        )
 
         model = ModelTransport(
-            node_feat_dim=datas[0].x.shape[1],
-            edge_feat_dim=datas[0].edge_attr.shape[1],
+            node_feat_dim=df.iloc[0]["graph"].x.shape[1],
+            edge_feat_dim=df.iloc[0]["graph"].edge_attr.shape[1],
             hidden_dim=300,
             num_classes=1,
             lr=1e-3,
             pos_prior=fold_pos_prior,
-            pu_type='elkan-noto',
+            pu_type="elkan-noto",
         )
         model.set_elkan_calibration_loader(calibration_loader)
         wrap_model = WrapModel(model=model)
@@ -216,7 +253,7 @@ if __name__ == "__main__":
         val_probs = np.concatenate(val_probs)
         val_y = np.concatenate(val_y).astype(int)
 
-        c_hat = float(getattr(model, 'elkan_c', torch.tensor(1.0)).item())
+        c_hat = float(getattr(model, "elkan_c", torch.tensor(1.0)).item())
         if c_hat <= 0:
             c_hat = 1.0
         print(f"Estimated Elkan-Noto c (fold {fold_idx}): {c_hat:.4f}")
@@ -224,10 +261,6 @@ if __name__ == "__main__":
         val_corrected = np.clip(val_probs / c_hat, 0.0, 1.0)
 
         ths = np.linspace(0.01, 0.99, 99)
-
-        c_hat_model = float(getattr(model, 'elkan_c', torch.tensor(1.0)).item())
-        if c_hat_model <= 0:
-            c_hat_model = 1.0
 
         test_probs, test_y = [], []
         with torch.no_grad():
@@ -241,18 +274,23 @@ if __name__ == "__main__":
         test_probs = np.concatenate(test_probs)
         test_y = np.concatenate(test_y).astype(int)
 
-        test_corrected = np.clip(test_probs / c_hat_model, 0.0, 1.0)
+        test_corrected = np.clip(test_probs / c_hat, 0.0, 1.0)
         torch.save(test_corrected, os.path.join(outdir_kfold, f"test_corrected.pt"))
         torch.save(test_y, os.path.join(outdir_kfold, f"test_y.pt"))
         ece_uncalibrated = expected_calibration_error(test_corrected, test_y)
-        print(f"ECE (uncalibrated Elkan-Noto probs, 15 bins): {ece_uncalibrated * 100:.2f}%")
+        print(
+            f"ECE (uncalibrated Elkan-Noto probs, 15 bins): {ece_uncalibrated * 100:.2f}%"
+        )
 
         print("== Dirichlet-calibrated ==")
         dirichlet_clf = LogisticRegression(max_iter=1000)
         val_dirichlet_features = dirichlet_feature_map(val_corrected)
         dirichlet_clf.fit(val_dirichlet_features, val_y)
         val_dirichlet_probs = dirichlet_clf.predict_proba(val_dirichlet_features)[:, 1]
-        f1s_dir = [f1_score(val_y, (val_dirichlet_probs >= t).astype(int)) for t in ths]
+        f1s_dir = [
+            f1_score(val_y, (val_dirichlet_probs >= t).astype(int), zero_division=0)
+            for t in ths
+        ]
         best_idx_dir = int(np.argmax(f1s_dir))
         best_th_dir = float(ths[best_idx_dir])
         best_f1_dir = float(f1s_dir[best_idx_dir])
@@ -261,16 +299,22 @@ if __name__ == "__main__":
         )
 
         test_dirichlet_features = dirichlet_feature_map(test_corrected)
-        test_dirichlet_probs = dirichlet_clf.predict_proba(test_dirichlet_features)[:, 1]
+        test_dirichlet_probs = dirichlet_clf.predict_proba(test_dirichlet_features)[
+            :, 1
+        ]
         test_pred_dir = (test_dirichlet_probs >= best_th_dir).astype(int)
 
         print(classification_report(test_y, test_pred_dir, digits=3))
-        classif_report = classification_report(test_y, test_pred_dir, digits=3, output_dict=True)
+        classif_report = classification_report(
+            test_y, test_pred_dir, digits=3, output_dict=True
+        )
         roc_auc_dir = float(roc_auc_score(test_y, test_dirichlet_probs))
         pr_auc_dir = float(average_precision_score(test_y, test_dirichlet_probs))
-        test_f1_dir = float(f1_score(test_y, test_pred_dir))
+        test_f1_dir = float(f1_score(test_y, test_pred_dir, zero_division=0))
         brier_dir = float(brier_score_loss(test_y, test_dirichlet_probs))
-        torch.save(test_dirichlet_probs, os.path.join(outdir_kfold, f"test_dirichlet_probs.pt"))
+        torch.save(
+            test_dirichlet_probs, os.path.join(outdir_kfold, f"test_dirichlet_probs.pt")
+        )
         ece_dir = expected_calibration_error(test_dirichlet_probs, test_y)
 
         dirichlet_bundle = {
@@ -280,7 +324,7 @@ if __name__ == "__main__":
         }
         file_dirichlet_pkl = os.path.join(outdir_kfold, "dirichlet_calibrator.pkl")
         write_pickle(data=dirichlet_bundle, path=file_dirichlet_pkl)
-        
+
         print(f"Saved Dirichlet calibrator to {file_dirichlet_pkl}")
 
         print(f"ROC AUC (Dirichlet): {roc_auc_dir:.3f}")

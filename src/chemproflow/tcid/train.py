@@ -7,6 +7,7 @@ from chemproflow.utils.misc import set_seed, write_json, write_pickle
 from chemproflow.tcid.model import ModelTcid
 from chemproflow.model.wrap import WrapModel
 from chemproflow.utils.molecule import fmt_smiles
+from chemproflow.utils.splitters import ScaffoldSplitter
 from iterstrat.ml_stratifiers import MultilabelStratifiedKFold
 from natsort import natsorted
 import numpy as np
@@ -100,6 +101,9 @@ if __name__ == "__main__":
         "--parameter-batch-size-int", default=128, type=int, help="Batch size"
     )
     parser.add_argument(
+        "--parameter-splitter-str", default="random", choices=["random", "splitter"], help="Splitter to use"
+    )
+    parser.add_argument(
         "--output-dir-str", required=True, help="Output directory"
     )
     args = parser.parse_args()
@@ -110,12 +114,14 @@ if __name__ == "__main__":
     seed = args.parameter_seed_int
     batch_size = args.parameter_batch_size_int
     file_dataset_csv = args.input_dataset_csv
+    splitter_params = args.parameter_splitter_str
     file_pyoverdine_xlsx = args.input_pyoverdine_xlsx
 
-    file_stats_overlap_csv = os.path.join(outdir, "overlap.csv")
-    file_stats_overlap_json = os.path.join(outdir, "overlap.json")
     file_encoder_pkl = os.path.join(outdir, "encoder.pkl")
 
+    if kfold < 1:
+        raise ValueError("--parameter-kfold-int must be >= 1")
+    
     os.makedirs(outdir, exist_ok=True)
     set_seed(seed=seed, workers=True)
 
@@ -144,79 +150,99 @@ if __name__ == "__main__":
     write_pickle(data=encoder, path=file_encoder_pkl)
 
     print("Build data points")
-    datas = []
+    df["graph"] = None
     for ix, row in df.iterrows():
         # Use real binary label vectors here
         graph = mol_to_graph(smiles=row["smiles"])
         graph.tcid = tcids[ix]
         # Keep class labels 2D so PyG batches into [batch, num_classes]
         graph.y = torch.tensor(labels[ix], dtype=torch.float).unsqueeze(0)
-        datas.append(graph)
-
-    # Shuffle once for the initial split; skmultilearn's splitter has no random_state
-    rng = np.random.RandomState(seed)
-    perm = rng.permutation(len(datas))
-    datas = [datas[i] for i in perm]
-    labels = labels[perm]
+        df.at[ix, "graph"] = graph
 
     print("Build indices for cross validation")
-    all_indices = np.arange(len(datas)).reshape(-1, 1)
+    # Shuffle once so iterative_train_test_split (which has no random_state) does not
+    # see a systematically ordered dataset (e.g. grouped by SMILES after groupby).
+    rng = np.random.RandomState(seed)
+    perm = rng.permutation(len(df))
+    df = df.iloc[perm].reset_index(drop=True)
+    labels = labels[perm]
 
-    # First create a single hold-out test split so cross-validation only touches
-    # the training portion of the data.
-    X_train_idx, _, X_test_idx, _ = iterative_train_test_split(
-        all_indices,
-        labels,
-        test_size=0.2,
-    )
+    if splitter_params == "random":
+        print("Build indices for cross validation")
+        all_indices = np.arange(len(df))
 
-    # Test
-    train_indices_all = X_train_idx.flatten()
-    test_indices = X_test_idx.flatten().tolist()
-    test_datas = [datas[ix] for ix in test_indices]
-    torch.save(test_datas, os.path.join(outdir, f"test.pt"))
-    test_loader = DataLoader(test_datas, batch_size=batch_size, shuffle=False)
-    
-    if kfold < 1:
-        raise ValueError("--parameter-kfold-int must be >= 1")
-    if kfold == 1:
-        print("K-Fold set to 1, using a single stratified hold-out split for validation")
-        if len(train_indices_all) < 2:
-            raise ValueError("Need at least 2 training samples when --parameter-kfold-int == 1")
-
-        val_fraction = 0.2
-        min_fraction = 1.0 / max(len(train_indices_all), 2)
-        val_fraction = max(val_fraction, min_fraction)
-        val_fraction = min(val_fraction, 0.5)
-
-        train_features = train_indices_all.reshape(-1, 1)
-        holdout_train, _, holdout_valid, _ = iterative_train_test_split(
-            train_features,
-            labels[train_indices_all],
-            test_size=val_fraction,
+        # First create a single hold-out test split so cross-validation only touches
+        # the training portion of the data.
+        train_indices_all, _, test_indices, _ = iterative_train_test_split(
+            all_indices.reshape(-1, 1),
+            labels,
+            test_size=0.2,
         )
+        train_indices_all = train_indices_all.flatten()
+        test_indices = test_indices.flatten()
 
-        index_lookup = {idx: pos for pos, idx in enumerate(train_indices_all)}
-        train_pos = np.array([index_lookup[int(idx)] for idx in holdout_train.flatten()], dtype=int)
-        val_pos = np.array([index_lookup[int(idx)] for idx in holdout_valid.flatten()], dtype=int)
-        split_iterator = [(train_pos, val_pos)]
+        # Test
+        test_datas = [df.loc[ix, "graph"] for ix in test_indices]
+        torch.save(test_datas, os.path.join(outdir, f"test.pt"))
+        test_loader = DataLoader(test_datas, batch_size=batch_size, shuffle=False)
+        
+        if kfold == 1:
+            print("K-Fold set to 1, using a single stratified hold-out split for validation")
+            if len(train_indices_all) < 2:
+                raise ValueError("Need at least 2 training samples when --parameter-kfold-int == 1")
+
+            val_fraction = 0.2
+            min_fraction = 1.0 / max(len(train_indices_all), 2)
+            val_fraction = max(val_fraction, min_fraction)
+            val_fraction = min(val_fraction, 0.5)
+
+            train_features = train_indices_all.reshape(-1, 1)
+            holdout_train, _, holdout_valid, _ = iterative_train_test_split(
+                train_features,
+                labels[train_indices_all],
+                test_size=val_fraction,
+            )
+
+            index_lookup = {idx: pos for pos, idx in enumerate(train_indices_all)}
+            train_pos = np.array([index_lookup[int(idx)] for idx in holdout_train.flatten()], dtype=int)
+            val_pos = np.array([index_lookup[int(idx)] for idx in holdout_valid.flatten()], dtype=int)
+            split_iterator = [(0, train_indices_all[train_pos].tolist(), train_indices_all[val_pos].tolist())]
+        else:
+            mskf = MultilabelStratifiedKFold(n_splits=kfold, shuffle=True, random_state=seed)
+            split_iterator = (
+                (fold_idx, train_indices_all[train_pos].tolist(), train_indices_all[val_pos].tolist())
+                for fold_idx, (train_pos, val_pos) in enumerate(
+                    mskf.split(train_indices_all.reshape(-1, 1), labels[train_indices_all])
+                )
+            )
+    elif splitter_params == "splitter":
+        scaffold_splitter = ScaffoldSplitter()
+        train_indices_all, _, test_indices = scaffold_splitter.split(
+            df=df,
+            frac_train=0.6,
+            frac_valid=0.2,
+            frac_test=0.2,
+        )
+        test_datas = [df.loc[ix, "graph"] for ix in test_indices]
+        torch.save(test_datas, os.path.join(outdir, f"test.pt"))
+        test_loader = DataLoader(test_datas, batch_size=batch_size, shuffle=False)
+        train_df = df.loc[train_indices_all]
+        split_iterator = scaffold_splitter.k_fold_split_stratified(
+            df=train_df, labels=labels, k=kfold, random_state=seed
+        )
     else:
-        mskf = MultilabelStratifiedKFold(n_splits=kfold, shuffle=True, random_state=seed)
-        split_iterator = mskf.split(train_indices_all.reshape(-1, 1), labels[train_indices_all])
-
+        raise ValueError("Splitter parameter unknown")
+    
     fold_metrics = []
     per_fold_thresholds = {}
     stats = {}
-    for fold_idx, (train_pos, val_pos) in enumerate(split_iterator):
+    for fold_idx, train_indices, valid_indices in split_iterator:
         print(f"=== Fold {fold_idx} / {kfold} ===")
         outdir_kfold = os.path.join(outdir, f"kfold-{fold_idx}")
         os.makedirs(outdir_kfold, exist_ok=True)
 
-        train_indices = train_indices_all[train_pos].tolist()
-        valid_indices = train_indices_all[val_pos].tolist()
-
-        train_datas = [datas[ix] for ix in train_indices]
-        valid_datas = [datas[ix] for ix in valid_indices]
+        train_datas = [df.loc[ix, "graph"] for ix in train_indices]
+        valid_datas = [df.loc[ix, "graph"] for ix in valid_indices]
 
         torch.save(train_datas, os.path.join(outdir_kfold, f"train.pt"))
         torch.save(valid_datas, os.path.join(outdir_kfold, f"valid.pt"))
@@ -233,12 +259,10 @@ if __name__ == "__main__":
         train_loader = DataLoader(train_datas, batch_size=batch_size, shuffle=True)
         valid_loader = DataLoader(valid_datas, batch_size=batch_size, shuffle=False)
 
-        train_label_matrix = labels[train_indices]
-
         print("Build model")
         model = ModelTcid(
-            node_feat_dim=datas[0].x.shape[1],
-            edge_feat_dim=datas[0].edge_attr.shape[1],
+            node_feat_dim=df.iloc[0]["graph"].x.shape[1],
+            edge_feat_dim=df.iloc[0]["graph"].edge_attr.shape[1],
             hidden_dim=300,
             num_classes=len(encoder.classes_),
         )
