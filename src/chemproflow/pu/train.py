@@ -139,7 +139,7 @@ if __name__ == "__main__":
             )
             for fold_idx, (train_pos, val_pos) in enumerate(split_iterator)
         )
-    elif splitter_params == "splitter":
+    elif splitter_params == "scaffold":
         scaffold_splitter = ScaffoldSplitter()
         train_indices_all, _, test_indices = scaffold_splitter.split(
             df=df,

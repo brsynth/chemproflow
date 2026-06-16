@@ -215,7 +215,7 @@ if __name__ == "__main__":
                     mskf.split(train_indices_all.reshape(-1, 1), labels[train_indices_all])
                 )
             )
-    elif splitter_params == "splitter":
+    elif splitter_params == "scaffold":
         scaffold_splitter = ScaffoldSplitter()
         train_indices_all, _, test_indices = scaffold_splitter.split(
             df=df,
