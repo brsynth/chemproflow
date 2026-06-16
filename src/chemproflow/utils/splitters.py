@@ -88,6 +88,85 @@ class Splitter(object):
             train_idx = sorted(all_indices - set(valid_idx))
             yield fold, train_idx, valid_idx
 
+    def k_fold_split_stratified(
+        self,
+        df: pd.DataFrame,
+        labels: np.ndarray,
+        k: int,
+        random_state: int = 0,
+    ) -> Generator:
+        """
+        Scaffold-preserving k-fold split with multi-label stratification.
+
+        Each scaffold group is treated as an atomic unit. A group-level label
+        vector (binary OR over member molecules) is used to stratify fold
+        assignment via MultilabelStratifiedKFold, so rare labels are spread
+        evenly across folds while scaffold integrity is maintained.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            Must have a "smiles" column. Its index labels must be valid
+            integer positions into `labels` (i.e. the original df has a
+            fresh 0-based RangeIndex and this is a .loc[] subset of it).
+        labels : np.ndarray
+            Full binary label matrix of shape [N_total, num_classes],
+            indexable by df's index labels.
+        k : int
+            Number of folds.
+        random_state : int
+            Passed to MultilabelStratifiedKFold for reproducibility.
+
+        Yields
+        ------
+        fold : int
+        train_idx : list
+        valid_idx : list
+        """
+        from iterstrat.ml_stratifiers import MultilabelStratifiedKFold
+
+        if k < 2:
+            raise ValueError("k must be at least 2.")
+        if k > len(df):
+            raise ValueError("k cannot be larger than the number of rows.")
+
+        # Build scaffold groups
+        all_scaffolds = defaultdict(list)
+        for ix, row in df.iterrows():
+            scaffold = generate_scaffold(row["smiles"], include_chirality=True)
+            all_scaffolds[scaffold].append(ix)
+
+        scaffold_sets = [
+            sorted(group)
+            for _, group in sorted(
+                all_scaffolds.items(),
+                key=lambda x: (len(x[1]), x[1][0]),
+                reverse=True,
+            )
+        ]
+
+        num_groups = len(scaffold_sets)
+        if k > num_groups:
+            raise ValueError(
+                f"k={k} exceeds the number of scaffold groups ({num_groups})."
+            )
+
+        # Group-level label matrix: binary OR over member molecules
+        num_classes = labels.shape[1]
+        group_labels = np.zeros((num_groups, num_classes), dtype=np.float32)
+        for g_idx, group in enumerate(scaffold_sets):
+            group_labels[g_idx] = labels[group].any(axis=0).astype(np.float32)
+
+        # Stratified k-fold over scaffold groups
+        group_indices = np.arange(num_groups).reshape(-1, 1)
+        mskf = MultilabelStratifiedKFold(n_splits=k, shuffle=True, random_state=random_state)
+
+        all_mol_indices = set(df.index)
+        for fold, (_, val_group_pos) in enumerate(mskf.split(group_indices, group_labels)):
+            valid_idx = sorted(idx for g in val_group_pos for idx in scaffold_sets[g])
+            train_idx = sorted(all_mol_indices - set(valid_idx))
+            yield fold, train_idx, valid_idx
+
 
 class ScaffoldSplitter(Splitter):
     """
