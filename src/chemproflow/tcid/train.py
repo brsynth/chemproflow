@@ -101,7 +101,7 @@ if __name__ == "__main__":
         "--parameter-batch-size-int", default=128, type=int, help="Batch size"
     )
     parser.add_argument(
-        "--parameter-splitter-str", default="random", choices=["random", "splitter"], help="Splitter to use"
+        "--parameter-splitter-str", default="random", choices=["random", "scaffold"], help="Splitter to use"
     )
     parser.add_argument(
         "--output-dir-str", required=True, help="Output directory"

@@ -71,7 +71,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--parameter-splitter-str",
         default="random",
-        choices=["random", "splitter"],
+        choices=["random", "scaffold"],
         help="Splitter to use",
     )
     parser.add_argument("--output-dir-str", required=True, help="Output directory")
