@@ -7,6 +7,10 @@ from typing import Generator, Iterator, Optional
 
 import numpy as np
 import pandas as pd
+from iterstrat.ml_stratifiers import (
+    MultilabelStratifiedKFold,
+    MultilabelStratifiedShuffleSplit,
+)
 from rdkit.Chem.Scaffolds import MurckoScaffold
 
 
@@ -123,8 +127,6 @@ class Splitter(object):
         train_idx : list
         valid_idx : list
         """
-        from iterstrat.ml_stratifiers import MultilabelStratifiedKFold
-
         if k < 2:
             raise ValueError("k must be at least 2.")
         if k > len(df):
@@ -217,5 +219,88 @@ class ScaffoldSplitter(Splitter):
                     valid_idx.extend(scaffold_set)
             else:
                 train_idx.extend(scaffold_set)
+
+        return train_idx, valid_idx, test_idx
+
+    def split_stratified(
+        self,
+        df: pd.DataFrame,
+        labels: np.ndarray,
+        frac_train: Optional[float] = None,
+        frac_valid: Optional[float] = None,
+        frac_test: Optional[float] = None,
+        random_state: int = 0,
+    ):
+        """
+        Scaffold-preserving single train/valid/test split with multi-label stratification.
+
+        Each scaffold group is treated as an atomic unit. A group-level label
+        vector (binary OR over member molecules) is used to stratify the split
+        via MultilabelStratifiedShuffleSplit, so rare labels are spread evenly
+        while scaffold integrity is maintained.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            Must have a "smiles" column. Its index labels must be valid
+            integer positions into `labels`.
+        labels : np.ndarray
+            Full binary label matrix of shape [N_total, num_classes],
+            indexable by df's index labels.
+        frac_train, frac_valid, frac_test : float
+            Fractions that must sum to 1.0.
+        random_state : int
+            Passed to MultilabelStratifiedShuffleSplit for reproducibility.
+
+        Returns
+        -------
+        train_idx, valid_idx, test_idx : list
+        """
+        np.testing.assert_almost_equal(frac_train + frac_valid + frac_test, 1.0)
+
+        # Build scaffold groups
+        all_scaffolds = defaultdict(list)
+        for ix, row in df.iterrows():
+            scaffold = generate_scaffold(row["smiles"], include_chirality=True)
+            all_scaffolds[scaffold].append(ix)
+
+        scaffold_sets = [
+            sorted(group)
+            for _, group in sorted(
+                all_scaffolds.items(),
+                key=lambda x: (len(x[1]), x[1][0]),
+                reverse=True,
+            )
+        ]
+
+        num_groups = len(scaffold_sets)
+
+        # Group-level label matrix: binary OR over member molecules
+        num_classes = labels.shape[1]
+        group_labels = np.zeros((num_groups, num_classes), dtype=np.float32)
+        for g_idx, group in enumerate(scaffold_sets):
+            group_labels[g_idx] = labels[group].any(axis=0).astype(np.float32)
+
+        group_dummy = np.arange(num_groups).reshape(-1, 1)
+
+        # Split scaffold groups into (train+valid) vs test
+        msss_test = MultilabelStratifiedShuffleSplit(
+            n_splits=1, test_size=frac_test, random_state=random_state
+        )
+        trainval_pos, test_pos = next(msss_test.split(group_dummy, group_labels))
+
+        # Split (train+valid) scaffold groups into train vs valid
+        frac_valid_of_trainval = frac_valid / (frac_train + frac_valid)
+        msss_valid = MultilabelStratifiedShuffleSplit(
+            n_splits=1, test_size=frac_valid_of_trainval, random_state=random_state
+        )
+        trainval_dummy = np.arange(len(trainval_pos)).reshape(-1, 1)
+        train_sub, valid_sub = next(
+            msss_valid.split(trainval_dummy, group_labels[trainval_pos])
+        )
+
+        train_idx = sorted(idx for g in trainval_pos[train_sub] for idx in scaffold_sets[g])
+        valid_idx = sorted(idx for g in trainval_pos[valid_sub] for idx in scaffold_sets[g])
+        test_idx = sorted(idx for g in test_pos for idx in scaffold_sets[g])
 
         return train_idx, valid_idx, test_idx

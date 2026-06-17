@@ -217,19 +217,30 @@ if __name__ == "__main__":
             )
     elif splitter_params == "scaffold":
         scaffold_splitter = ScaffoldSplitter()
-        train_indices_all, _, test_indices = scaffold_splitter.split(
-            df=df,
-            frac_train=0.6,
-            frac_valid=0.2,
-            frac_test=0.2,
-        )
+        if kfold == 1:
+            train_indices, valid_indices, test_indices = scaffold_splitter.split_stratified(
+                df=df,
+                labels=labels,
+                frac_train=0.6,
+                frac_valid=0.2,
+                frac_test=0.2,
+                random_state=seed,
+            )
+            split_iterator = ((0, train_indices, valid_indices),)
+        else:
+            train_indices_all, _, test_indices = scaffold_splitter.split(
+                df=df,
+                frac_train=0.8,
+                frac_valid=0.0,
+                frac_test=0.2,
+            )
+            train_df = df.loc[train_indices_all]
+            split_iterator = scaffold_splitter.k_fold_split_stratified(
+                df=train_df, labels=labels, k=kfold, random_state=seed
+            )
         test_datas = [df.loc[ix, "graph"] for ix in test_indices]
         torch.save(test_datas, os.path.join(outdir, f"test.pt"))
         test_loader = DataLoader(test_datas, batch_size=batch_size, shuffle=False)
-        train_df = df.loc[train_indices_all]
-        split_iterator = scaffold_splitter.k_fold_split_stratified(
-            df=train_df, labels=labels, k=kfold, random_state=seed
-        )
     else:
         raise ValueError("Splitter parameter unknown")
     
