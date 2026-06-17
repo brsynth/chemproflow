@@ -119,9 +119,6 @@ if __name__ == "__main__":
 
     file_encoder_pkl = os.path.join(outdir, "encoder.pkl")
 
-    if kfold < 1:
-        raise ValueError("--parameter-kfold-int must be >= 1")
-    
     os.makedirs(outdir, exist_ok=True)
     set_seed(seed=seed, workers=True)
 
