@@ -25,4 +25,3 @@ checkpoints
 lightning_logs
 .snakemake
 .pycache
-script/data
