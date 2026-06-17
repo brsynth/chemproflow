@@ -28,6 +28,7 @@ def _cmd_pip(args):
         AP.exit(1)
     if args.output_results_csv is None and args.output_results_html is None:
         logging.warning("No output files are indicated, results will not be saved")
+    report_in_dataset = True if args.parameter_report_in_dataset else False
 
     logging.info("Parse input")
     df = pd.DataFrame(columns=["smiles"])
@@ -55,7 +56,8 @@ def _cmd_pip(args):
         file_encoder_transport_pkl=args.input_encoder_transport_pkl,
         file_dirichlet_calibrator_pkl=args.input_dirichlet_calibrator_pkl,
     )
-    df["dataset_transport"] = model_transport.in_dataset(smiles=canonical_smiles)
+    if report_in_dataset:
+        df["dataset_transport"] = model_transport.in_dataset(smiles=canonical_smiles)
     df["pred_transport"] = model_transport.predict(smiles=canonical_smiles, batch_size=args.parameter_batch_size_int)
 
     # Run prediction - TCID
@@ -65,7 +67,8 @@ def _cmd_pip(args):
         file_encoder_tcid_pkl=args.input_encoder_tcid_pkl,
         file_threshold_tcid_json=args.input_threshold_tcid_json,
     )
-    df["dataset_tcid"] = model_tcid.in_dataset(smiles=canonical_smiles)
+    if report_in_dataset:
+        df["dataset_tcid"] = model_tcid.in_dataset(smiles=canonical_smiles)
     positive_transport = df["pred_transport"].astype(str).str.lower().isin(["positive", "true", "1", "yes", "y"])
     smiles = df.loc[positive_transport, 'smiles_canonical'].tolist()
     if len(smiles) > 0:
@@ -120,6 +123,7 @@ P_pip_inp.add_argument("--input-catalog-micro-organisms-csv", required=True, hel
 P_pip_inp.add_argument("--input-tcid-equivalent-json", required=True, help="Path input TCID file")
 P_pip_par = P_pip.add_argument_group("Parameter")
 P_pip_par.add_argument("--parameter-batch-size-int", type=int, default=16, help="Batch size")
+P_pip_par.add_argument("--parameter-report-in-dataset", action="store_true", help="Report is the SMILES is in the dataset used to train the model with any values (e.g. positive, negative)")
 P_pip_out = P_pip.add_argument_group("Output")
 P_pip_out.add_argument("--output-results-csv", help="Path to output CSV file")
 P_pip_out.add_argument("--output-results-html", help="Path to output HTML file")
