@@ -25,13 +25,13 @@ class ModelTransportInfer:
             file_dirichlet_calibrator_pkl: str,
         ):
         self.df_dataset = pd.read_csv(file_dataset_transport_csv)
-        model = ModelTransport.load_from_checkpoint(file_model_transport_pkl)
-        model.eval()
+        self.model = ModelTransport.load_from_checkpoint(file_model_transport_pkl)
+        self.model.eval()
         with open(file_encoder_transport_pkl, "rb") as f:
             self.encoder = pickle.load(f)
         with open(file_dirichlet_calibrator_pkl, "rb") as f:
             self.dirichlet_bundle = pickle.load(f)
-        self.device = next(model.parameters()).device
+        self.device = next(self.model.parameters()).device
 
     def in_dataset(self, smiles: str | List[str]) -> List[bool]:
         if isinstance(smiles, str):
@@ -51,26 +51,34 @@ class ModelTransportInfer:
         if isinstance(smiles, str):
             smiles = [smiles]
 
+        n = len(smiles)
         loader = build_loader(smiles, batch_size=batch_size, to_fmt=False)
         logits_list = []
+        orig_indices = []
         with torch.no_grad():
-            for batch in tqdm(loader, total=len(loader)): #, desc="Predicting transport"):
+            for batch in tqdm(loader, total=len(loader)):
                 batch = batch.to(self.device)
                 logits = self.model(batch).squeeze(-1)  # [B]
                 logits_list.append(logits.cpu())
-        logits = torch.cat(logits_list, dim=0)  # [N]
-        #logits = logits / float(model.temperature)
+                orig_indices.append(batch.orig_idx.cpu())
+
+        preds = np.full(n, None, dtype=object)
+        if not logits_list:
+            return list(preds)
+
+        logits = torch.cat(logits_list, dim=0)  # [N_valid]
+        orig_indices = torch.cat(orig_indices, dim=0).numpy()  # [N_valid]
         probs = torch.sigmoid(logits)
         probs = self.model.elkan_correct_probs(probs).numpy()
-        
+
         dirichlet_clf = self.dirichlet_bundle["model"]
         dirichlet_threshold = self.dirichlet_bundle["threshold"]
         dirichlet_features = self.dirichlet_feature_map(probs)
         dirichlet_probs = dirichlet_clf.predict_proba(dirichlet_features)[:, 1]
-
-        preds = (dirichlet_probs >= dirichlet_threshold).astype(int)
-        preds = self.encoder.inverse_transform(preds.reshape(-1, 1)).reshape(-1)
-        return preds
+        preds_valid = (dirichlet_probs >= dirichlet_threshold).astype(int)
+        preds_valid = self.encoder.inverse_transform(preds_valid.reshape(-1, 1)).reshape(-1)
+        preds[orig_indices] = preds_valid
+        return list(preds)
 
 class ModelTcidInfer:
     def __init__(
@@ -81,14 +89,14 @@ class ModelTcidInfer:
             file_threshold_tcid_json: str,
         ):
         self.df_dataset = pd.read_csv(file_dataset_tcid_csv)
-        model = ModelTcid.load_from_checkpoint(file_model_tcid_pkl)
-        model.eval()
+        self.model = ModelTcid.load_from_checkpoint(file_model_tcid_pkl)
+        self.model.eval()
         with open(file_encoder_tcid_pkl, "rb") as f:
             self.encoder = pickle.load(f)
         data_thresholds = read_json(path=file_threshold_tcid_json)
         thresholds = [data_thresholds[label] for label in self.encoder.classes_]
-        thresholds = np.asarray(thresholds, dtype=np.float32).reshape(1, -1)
-        self.device = next(model.parameters()).device
+        self.thresholds = np.asarray(thresholds, dtype=np.float32).reshape(1, -1)
+        self.device = next(self.model.parameters()).device
 
     def in_dataset(self, smiles: str | List[str]) -> List[bool]:
         if isinstance(smiles, str):
@@ -102,17 +110,18 @@ class ModelTcidInfer:
     def predict(self, smiles: str | List[str], batch_size: int = 16) -> List[str]:
         if isinstance(smiles, str):
             smiles = [smiles]
+        n = len(smiles)
         loader = build_loader(smiles, batch_size=batch_size, to_fmt=False)
-        tcids = []
+        tcids = [None] * n
         with torch.no_grad():
             for batch in loader:
                 batch = batch.to(self.device)
-                # Extract labels from dataset batch
                 logits = self.model(batch)  # shape: [batch, labels]
                 probs = torch.sigmoid(logits)
                 preds = (probs.cpu().numpy() >= self.thresholds).astype(int)
                 y_vals = self.encoder.inverse_transform(preds)  # shape: [batch, labels]
-                tcids.extend(y_vals)
+                for i, orig_idx in enumerate(batch.orig_idx.cpu().tolist()):
+                    tcids[orig_idx] = y_vals[i]
         return tcids
 
 class CatalogTcid:
@@ -122,8 +131,8 @@ class CatalogTcid:
         file_catalog_micro_organisms_csv: str,
         file_tcid_equivalent_json: str,
     ):
-        df_catalog = pd.read_csv(file_catalog_micro_organisms_csv)  # columns = ['accession', 'tcids']
-        df_catalog["tcids"] = df_catalog["tcids"].apply(ast.literal_eval)
+        self.df_catalog = pd.read_csv(file_catalog_micro_organisms_csv)  # columns = ['accession', 'tcids']
+        self.df_catalog["tcids"] = self.df_catalog["tcids"].apply(ast.literal_eval)
 
         with open(file_tcid_equivalent_json) as fd:
             tcid_equivalent = json.load(fd)
@@ -143,7 +152,7 @@ class CatalogTcid:
                 expanded.update(tcid_to_group.get(tcid, []))
             return expanded
 
-        df_catalog["tcids"] = df_catalog["tcids"].apply(expand_tcids)
+        self.df_catalog["tcids"] = self.df_catalog["tcids"].apply(expand_tcids)
 
     def map_tcids_organisms(self, tcids: List[str|int], value: str = "accession") -> List[List[str | int]]:
         ids = []
