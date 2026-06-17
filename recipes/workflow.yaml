@@ -8,7 +8,7 @@ dependencies:
   - cmap
   - iterative-stratification=0.1.9
   - jinja2
-  - lightning=2.5.5
+  - lightning=2.5.6
   - natsort
   - optuna=4.4.0
   - owlready2

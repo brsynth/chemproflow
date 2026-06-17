@@ -76,6 +76,8 @@ def mol_to_graph(smiles, to_fmt: bool = True):
     if len(smiles) < 1:
         return None
     mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return None
 
     Chem.Kekulize(mol, clearAromaticFlags=True)
     atoms = mol.GetAtoms()
@@ -112,7 +114,7 @@ def build_loader(smiles: List[str], batch_size: int, to_fmt: bool, *args, **kwar
         g = mol_to_graph(smiles=s, to_fmt=to_fmt)
         if g is None:
             continue
-        g.orig_idx = idx  # Keep original position for result alignment
+        g.orig_idx = torch.tensor([idx], dtype=torch.long)
         graphs.append(g)
 
     kwargs.setdefault("shuffle", False)

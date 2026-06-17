@@ -19,10 +19,10 @@ with open("recipes/workflow.yaml") as fid:
 install_requires = []
 for package in env["dependencies"]:
     if isinstance(package, dict):
-        package = package.get("pip", [])
-        install_requires += package
-    else:
-        install_requires.append(package)
+        raise ValueError("pip dependancies are defined in the yaml")
+    if "=" in package:
+        package = package.replace("=", "==")
+    install_requires.append(package)
 description = (
     "End-to-end mapping of membrane transport from chemical structure to microorganisms"
 )

@@ -113,6 +113,7 @@
       {% for sample in samples %}
         {% set sample_name = sample.name | default(sample.sample_name, true) %}
         {% set sample_smiles = sample.smiles | default(sample.sample_smiles, true) %}
+        {% set sample_smiles_canonical = sample.smiles_canonical | default(sample.sample_smiles_canonical, true) %}
         {% set sample_weight = sample.weight | default(sample.sample_weight, true) %}
         {% set sample_svg = sample.svg | default(sample.sample_svg, true) %}
         {% set sample_is_transported = sample.is_transported | default(sample.sample_is_transported, true) %}
@@ -137,6 +138,10 @@
                                     {% if sample_smiles %}
                                     <dt class="col-4">SMILES</dt>
                                     <dd class="col-8"><code class="text-break">{{ sample_smiles }}</code></dd>
+                                        {% if sample_smiles_canonical %}
+                                            <dt class="col-4">SMILES (canonical)</dt>
+                                            <dd class="col-8"><code class="text-break">{{ sample_smiles_canonical }}</code></dd>
+                                        {% endif %}
                                     {% endif %}
                         
                                     {% if sample_weight %}
