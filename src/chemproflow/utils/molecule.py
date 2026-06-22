@@ -1,4 +1,7 @@
+from typing import List, Optional
+
 from rdkit import Chem, RDLogger
+from rdkit.Chem import rdFingerprintGenerator
 from rdkit.Chem.EnumerateStereoisomers import EnumerateStereoisomers, StereoEnumerationOptions
 
 RDLogger.DisableLog("rdApp.*")
@@ -15,3 +18,11 @@ def fmt_smiles(smiles: str) -> str:
     # Get only the first stereoisomer
     first_isomer = next(stereoisomers, None)  # None is a default if the generator is empty
     return Chem.MolToSmiles(first_isomer)
+
+
+def to_fp(smiles: str, radius: int = 2, fp_size: int = 2048) -> Optional[List[int]]:
+    generator = rdFingerprintGenerator.GetMorganGenerator(radius=radius, fpSize=fp_size)
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return None
+    return generator.GetFingerprint(mol)
