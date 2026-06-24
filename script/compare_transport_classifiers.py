@@ -123,6 +123,8 @@ def parse_pt_for_sklearn(path: str, cache: Optional[Dict] = None):
             feats = cache[data.smiles]
         else:
             mol = Chem.MolFromSmiles(data.smiles)
+            if mol is None:
+                continue
             fp = generator.GetFingerprint(mol)
             feats = np.zeros((2048,), dtype=np.float32)
             DataStructs.ConvertToNumpyArray(fp, feats)
