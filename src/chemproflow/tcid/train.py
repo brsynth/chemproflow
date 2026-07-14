@@ -83,6 +83,212 @@ def evaluate_with_thresholds(model, loader, thresholds, average="weighted"):
     return metrics
 
 
+
+def evaluate_target_tcid(model, loader, thresholds, target_index):
+    """Evaluate one TC-ID while retaining every sample in the supplied loader."""
+    probs, targets = collect_probs_and_targets(model, loader)
+    threshold = float(np.asarray(thresholds)[target_index])
+    y_true = targets[:, target_index].astype(int)
+    y_prob = probs[:, target_index]
+    y_pred = (y_prob >= threshold).astype(int)
+
+    return {
+        "target_index": int(target_index),
+        "threshold": threshold,
+        "support": int(y_true.sum()),
+        "n_samples": int(len(y_true)),
+        "recovered": int(np.sum((y_true == 1) & (y_pred == 1))),
+        "precision": float(precision_score(y_true, y_pred, zero_division=0)),
+        "recall": float(recall_score(y_true, y_pred, zero_division=0)),
+        "f1": float(f1_score(y_true, y_pred, zero_division=0)),
+        "mean_probability": float(np.mean(y_prob)),
+        "median_probability": float(np.median(y_prob)),
+        "probabilities": y_prob.tolist(),
+        "predictions": y_pred.tolist(),
+        "targets": y_true.tolist(),
+    }
+
+
+def make_target_holdout_split(df, target_tcid, splitter, seed):
+    """Split one TC-ID's substrate associations into 50/50 train/test halves.
+
+    The held-out half is excluded from training and validation entirely (no
+    graph, no label, for any TC-ID) and is only ever seen at the final,
+    external target-recovery evaluation.
+    """
+    target_mask = df["tcid"].apply(lambda values: target_tcid in values).to_numpy()
+    target_indices = np.flatnonzero(target_mask)
+
+    if len(target_indices) < 4:
+        raise ValueError(
+            f"TC-ID {target_tcid!r} has only {len(target_indices)} substrates; "
+            "at least 4 are required for a 50/50 holdout."
+        )
+
+    rng = np.random.RandomState(seed)
+
+    if splitter == "random":
+        shuffled = target_indices.copy()
+        rng.shuffle(shuffled)
+        n_test = len(shuffled) // 2
+        test_indices = np.sort(shuffled[:n_test])
+        target_train_indices = np.sort(shuffled[n_test:])
+
+    elif splitter == "scaffold":
+        target_df = (
+            df.loc[target_indices, ["smiles", "tcid"]]
+            .assign(full_index=target_indices)
+            .reset_index(drop=True)
+        )
+        scaffold_splitter = ScaffoldSplitter()
+        train_pos, _, test_pos = scaffold_splitter.split(
+            df=target_df,
+            frac_train=0.5,
+            frac_valid=0.0,
+            frac_test=0.5,
+            random_state=seed,
+        )
+        train_pos = np.asarray(train_pos, dtype=int)
+        test_pos = np.asarray(test_pos, dtype=int)
+        target_train_indices = np.sort(
+            target_df.loc[train_pos, "full_index"].to_numpy(dtype=int)
+        )
+        test_indices = np.sort(
+            target_df.loc[test_pos, "full_index"].to_numpy(dtype=int)
+        )
+    else:
+        raise ValueError(f"Unknown target splitter: {splitter}")
+
+    if len(target_train_indices) == 0 or len(test_indices) == 0:
+        raise ValueError(
+            f"Unable to create non-empty 50/50 split for TC-ID {target_tcid!r}."
+        )
+
+    all_indices = np.arange(len(df))
+    # The target-training half is fixed in every training fold. The held-out
+    # half is excluded from training entirely, not just its target label.
+    fixed_train_indices = np.sort(target_train_indices).astype(int)
+    cv_pool_indices = np.setdiff1d(
+        all_indices,
+        np.union1d(fixed_train_indices, test_indices),
+        assume_unique=False,
+    ).astype(int)
+
+    if len(cv_pool_indices) < 2:
+        raise ValueError("Need at least two compounds in the cross-validation pool.")
+
+    return {
+        "target_train_indices": target_train_indices.astype(int),
+        "test_indices": test_indices.astype(int),
+        "fixed_train_indices": fixed_train_indices,
+        "cv_pool_indices": cv_pool_indices,
+    }
+
+
+def build_target_cv_splits(
+    df,
+    labels,
+    target_train_indices,
+    cv_pool_indices,
+    splitter,
+    kfold,
+    seed,
+):
+    """Build CV splits while keeping all target-associated molecules in every train fold."""
+    target_train_indices = np.asarray(target_train_indices, dtype=int)
+    cv_pool_indices = np.asarray(cv_pool_indices, dtype=int)
+
+    if kfold < 1:
+        raise ValueError("--parameter-kfold-int must be at least 1")
+
+    if kfold == 1:
+        val_fraction = 0.2
+        min_fraction = 1.0 / max(len(cv_pool_indices), 2)
+        val_fraction = min(max(val_fraction, min_fraction), 0.5)
+
+        non_target_train, _, non_target_valid, _ = iterative_train_test_split(
+            cv_pool_indices.reshape(-1, 1),
+            labels[cv_pool_indices],
+            test_size=val_fraction,
+        )
+        train_indices = np.sort(
+            np.concatenate(
+                [non_target_train.flatten().astype(int), target_train_indices]
+            )
+        )
+        valid_indices = np.sort(non_target_valid.flatten().astype(int))
+        return [(0, train_indices.tolist(), valid_indices.tolist())]
+
+    if len(cv_pool_indices) < kfold:
+        raise ValueError(
+            f"Need at least {kfold} CV-pool compounds for {kfold}-fold CV; "
+            f"found {len(cv_pool_indices)}."
+        )
+
+    if splitter == "random":
+        mskf = MultilabelStratifiedKFold(
+            n_splits=kfold,
+            shuffle=True,
+            random_state=seed,
+        )
+        splits = []
+        for fold_idx, (train_pos, valid_pos) in enumerate(
+            mskf.split(
+                cv_pool_indices.reshape(-1, 1),
+                labels[cv_pool_indices],
+            )
+        ):
+            train_indices = np.sort(
+                np.concatenate(
+                    [cv_pool_indices[train_pos], target_train_indices]
+                )
+            )
+            valid_indices = np.sort(cv_pool_indices[valid_pos])
+            splits.append(
+                (fold_idx, train_indices.tolist(), valid_indices.tolist())
+            )
+        return splits
+
+    if splitter == "scaffold":
+        scaffold_splitter = ScaffoldSplitter()
+        non_target_df = (
+            df.loc[cv_pool_indices]
+            .assign(full_index=cv_pool_indices)
+            .reset_index(drop=True)
+        )
+        non_target_labels = labels[cv_pool_indices]
+        raw_splits = scaffold_splitter.k_fold_split_stratified(
+            df=non_target_df,
+            labels=non_target_labels,
+            k=kfold,
+            random_state=seed,
+        )
+
+        splits = []
+        for fold_idx, train_pos, valid_pos in raw_splits:
+            train_pos = np.asarray(train_pos, dtype=int)
+            valid_pos = np.asarray(valid_pos, dtype=int)
+            cv_train_indices = non_target_df.loc[
+                train_pos, "full_index"
+            ].to_numpy(dtype=int)
+            valid_indices = non_target_df.loc[
+                valid_pos, "full_index"
+            ].to_numpy(dtype=int)
+            train_indices = np.sort(
+                np.concatenate([cv_train_indices, target_train_indices])
+            )
+            splits.append(
+                (
+                    int(fold_idx),
+                    train_indices.tolist(),
+                    np.sort(valid_indices).tolist(),
+                )
+            )
+        return splits
+
+    raise ValueError(f"Unknown target CV splitter: {splitter}")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -104,6 +310,10 @@ if __name__ == "__main__":
         "--parameter-splitter-str", default="random", choices=["random", "scaffold"], help="Splitter to use"
     )
     parser.add_argument(
+        "--parameter-tcid-str", help=("Use this TC-ID for a 50/50 substrate-association holdout. "
+              "Held-out molecules retain their other labels during training.")
+    )
+    parser.add_argument(
         "--output-dir-str", required=True, help="Output directory"
     )
     args = parser.parse_args()
@@ -115,6 +325,7 @@ if __name__ == "__main__":
     batch_size = args.parameter_batch_size_int
     file_dataset_csv = args.input_dataset_csv
     splitter_params = args.parameter_splitter_str
+    split_tcid = args.parameter_tcid_str
     file_pyoverdine_xlsx = args.input_pyoverdine_xlsx
 
     file_encoder_pkl = os.path.join(outdir, "encoder.pkl")
@@ -164,7 +375,63 @@ if __name__ == "__main__":
     df = df.iloc[perm].reset_index(drop=True)
     labels = labels[perm]
 
-    if splitter_params == "random":
+    target_mode = bool(split_tcid and split_tcid.strip())
+    target_index = None
+    target_split_info = None
+
+    if target_mode:
+        split_tcid = split_tcid.strip()
+        if split_tcid not in encoder.classes_:
+            raise ValueError(
+                f"TC-ID {split_tcid!r} is not present in the encoder. "
+                f"Available labels: {encoder.classes_.tolist()}"
+            )
+
+        target_index = int(np.flatnonzero(encoder.classes_ == split_tcid)[0])
+        target_split_info = make_target_holdout_split(
+            df=df,
+            target_tcid=split_tcid,
+            splitter=splitter_params,
+            seed=seed,
+        )
+
+        test_indices = target_split_info["test_indices"]
+
+        split_iterator = build_target_cv_splits(
+            df=df,
+            labels=labels,
+            target_train_indices=target_split_info["fixed_train_indices"],
+            cv_pool_indices=target_split_info["cv_pool_indices"],
+            splitter=splitter_params,
+            kfold=kfold,
+            seed=seed,
+        )
+
+        test_datas = [df.loc[ix, "graph"] for ix in test_indices]
+        torch.save(test_datas, os.path.join(outdir, "test.pt"))
+        test_loader = DataLoader(test_datas, batch_size=batch_size, shuffle=False)
+
+        split_roles = np.full(len(df), "cv_pool", dtype=object)
+        split_roles[target_split_info["target_train_indices"]] = "target_positive_train_fixed"
+        split_roles[test_indices] = "target_holdout_excluded_from_training"
+        manifest = df[["smiles", "tcid"]].copy()
+        manifest["split"] = split_roles
+        manifest["contains_target_tcid_original"] = manifest["tcid"].apply(
+            lambda values: split_tcid in values
+        )
+        manifest["molecule_used_for_training"] = True
+        manifest.loc[test_indices, "molecule_used_for_training"] = False
+        manifest.to_csv(os.path.join(outdir, "target_split_manifest.csv"), index=False)
+
+        print(
+            f"Target experiment for {split_tcid}: "
+            f"target train half={len(target_split_info['target_train_indices'])}, "
+            f"target test half (excluded from training)={len(test_indices)}, "
+            f"CV pool={len(target_split_info['cv_pool_indices'])}, "
+            f"kfold={kfold}"
+        )
+
+    elif splitter_params == "random":
         print("Build indices for cross validation")
         all_indices = np.arange(len(df))
 
@@ -230,6 +497,7 @@ if __name__ == "__main__":
                 frac_train=0.8,
                 frac_valid=0.0,
                 frac_test=0.2,
+                random_state=seed,
             )
             train_df = df.loc[train_indices_all]
             split_iterator = scaffold_splitter.k_fold_split_stratified(
@@ -248,6 +516,17 @@ if __name__ == "__main__":
         print(f"=== Fold {fold_idx} / {kfold} ===")
         outdir_kfold = os.path.join(outdir, f"kfold-{fold_idx}")
         os.makedirs(outdir_kfold, exist_ok=True)
+
+        if target_mode:
+            heldout_indices = set(target_split_info["test_indices"].tolist())
+            leaked_indices = heldout_indices.intersection(train_indices).union(
+                heldout_indices.intersection(valid_indices)
+            )
+            if leaked_indices:
+                raise AssertionError(
+                    "Target-association holdout molecules must never appear in "
+                    f"a training or validation fold; leaked indices: {sorted(leaked_indices)}"
+                )
 
         train_datas = [df.loc[ix, "graph"] for ix in train_indices]
         valid_datas = [df.loc[ix, "graph"] for ix in valid_indices]
@@ -302,11 +581,33 @@ if __name__ == "__main__":
         print("Test")
         test_metrics = evaluate_with_thresholds(wrap_model.model, test_loader, fold_threshold_values)
         stats_fold["test_threshold_metrics"] = test_metrics
-        fold_metrics.append(test_metrics["f1"])
-        print(
-            f"Thresholded Test F1={test_metrics['f1']:.3f} "
-            f"Precision={test_metrics['precision']:.3f} Recall={test_metrics['recall']:.3f}"
-        )
+
+        if target_mode:
+            target_metrics = evaluate_target_tcid(
+                wrap_model.model,
+                test_loader,
+                fold_threshold_values,
+                target_index=target_index,
+            )
+            target_metrics["tcid"] = split_tcid
+            target_metrics["splitter"] = splitter_params
+            target_metrics["seed"] = seed
+            stats_fold["target_tcid_metrics"] = target_metrics
+            fold_metrics.append(target_metrics["recall"])
+            print(
+                f"Target {split_tcid} recovery: "
+                f"{target_metrics['recovered']}/{target_metrics['support']} "
+                f"Recall={target_metrics['recall']:.3f} "
+                f"Precision={target_metrics['precision']:.3f} "
+                f"F1={target_metrics['f1']:.3f}"
+            )
+        else:
+            fold_metrics.append(test_metrics["f1"])
+            print(
+                f"Thresholded Test F1={test_metrics['f1']:.3f} "
+                f"Precision={test_metrics['precision']:.3f} "
+                f"Recall={test_metrics['recall']:.3f}"
+            )
 
         stats[str(fold_idx)] = stats_fold
 
@@ -317,6 +618,7 @@ if __name__ == "__main__":
     write_json(data=per_fold_thresholds, path=file_thresholds_summary)
 
     print("Fold results:", fold_metrics)
-    mean_roc = np.nanmean(fold_metrics)
-
-    print("Mean ROC:", mean_roc)
+    if target_mode:
+        print("Mean target recall:", np.nanmean(fold_metrics))
+    else:
+        print("Mean F1:", np.nanmean(fold_metrics))
