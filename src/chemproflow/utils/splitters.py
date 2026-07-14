@@ -177,35 +177,51 @@ class ScaffoldSplitter(Splitter):
     def __init__(self):
         super(ScaffoldSplitter, self).__init__()
     
-    def split(self, 
+    def split(self,
         df: pd.DataFrame,
         frac_train: Optional[float] = None,
         frac_valid: Optional[float] = None,
         frac_test: Optional[float] = None,
+        random_state: Optional[int] = None,
     ):
         """
         Args:
             df(pd.DataFrame): the dataset to split. Make sure each element in
-                the dataset has key "smiles" which will be used to calculate the 
+                the dataset has key "smiles" which will be used to calculate the
                 scaffold.
             frac_train(float): the fraction of data to be used for the train split.
             frac_valid(float): the fraction of data to be used for the valid split.
             frac_test(float): the fraction of data to be used for the test split.
+            random_state(int): if set, randomizes the tie-break order among
+                same-size scaffold groups so the resulting split varies across
+                seeds. Groups are still packed largest-first to keep the split
+                close to the requested fractions. If None, tie-breaking is
+                deterministic (original behavior).
         """
         np.testing.assert_almost_equal(frac_train + frac_valid + frac_test, 1.0)
-        
+
         # create dict of the form {scaffold_i: [idx1, idx....]}
         all_scaffolds = defaultdict(list)
         for ix, row in df.iterrows():
             scaffold = generate_scaffold(row["smiles"], include_chirality=True)
             all_scaffolds[scaffold].append(ix)
-        
+
         # sort from largest to smallest sets
         all_scaffolds = {key: sorted(value) for key, value in all_scaffolds.items()}
-        all_scaffold_sets = [
-            scaffold_set for (_, scaffold_set) in sorted(
-                all_scaffolds.items(), key=lambda x: (len(x[1]), x[1][0]), reverse=True)
-        ] # List[List[int]]
+        scaffold_items = list(all_scaffolds.items())
+
+        if random_state is not None:
+            # Shuffle first so the stable sort below breaks size ties randomly.
+            np.random.RandomState(random_state).shuffle(scaffold_items)
+            all_scaffold_sets = [
+                scaffold_set for (_, scaffold_set) in sorted(
+                    scaffold_items, key=lambda x: len(x[1]), reverse=True)
+            ] # List[List[int]]
+        else:
+            all_scaffold_sets = [
+                scaffold_set for (_, scaffold_set) in sorted(
+                    scaffold_items, key=lambda x: (len(x[1]), x[1][0]), reverse=True)
+            ] # List[List[int]]
 
         # get train, valid test indices
         train_cutoff = frac_train * len(df)
