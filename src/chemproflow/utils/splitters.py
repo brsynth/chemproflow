@@ -238,6 +238,68 @@ class ScaffoldSplitter(Splitter):
 
         return train_idx, valid_idx, test_idx
 
+    def split_balanced_groups(
+        self,
+        df: pd.DataFrame,
+        random_state: Optional[int] = None,
+    ):
+        """
+        Split by scaffold into two halves, balancing the NUMBER of distinct
+        scaffold groups (not the number of molecules) between train and test.
+
+        `split()` packs scaffold groups by molecule-count fractions, so on a
+        small dataset (e.g. one TC-ID's substrates) the single largest
+        scaffold group can be dumped entirely on one side, leaving the other
+        side with only one (or very few) distinct scaffolds. This method
+        instead assigns each scaffold group, largest first, to whichever side
+        currently holds fewer groups, guaranteeing the two sides differ by at
+        most one scaffold group.
+
+        Args:
+            df(pd.DataFrame): the dataset to split; must have a "smiles" column.
+            random_state(int): shuffles the tie-break order among same-size
+                scaffold groups so the split varies across seeds. If None,
+                tie-breaking is deterministic.
+
+        Returns:
+            train_idx, test_idx: lists of df index labels.
+        """
+        all_scaffolds = defaultdict(list)
+        for ix, row in df.iterrows():
+            scaffold = generate_scaffold(row["smiles"], include_chirality=True)
+            all_scaffolds[scaffold].append(ix)
+
+        scaffold_items = list(all_scaffolds.items())
+        if len(scaffold_items) < 2:
+            raise ValueError(
+                "Need at least 2 distinct scaffolds to build a balanced "
+                f"scaffold split; found {len(scaffold_items)}."
+            )
+
+        if random_state is not None:
+            np.random.RandomState(random_state).shuffle(scaffold_items)
+            all_scaffold_sets = [
+                sorted(scaffold_set) for (_, scaffold_set) in sorted(
+                    scaffold_items, key=lambda x: len(x[1]), reverse=True)
+            ]
+        else:
+            all_scaffold_sets = [
+                sorted(scaffold_set) for (_, scaffold_set) in sorted(
+                    scaffold_items, key=lambda x: (len(x[1]), x[1][0]), reverse=True)
+            ]
+
+        train_idx, test_idx = [], []
+        train_groups, test_groups = 0, 0
+        for scaffold_set in all_scaffold_sets:
+            if train_groups <= test_groups:
+                train_idx.extend(scaffold_set)
+                train_groups += 1
+            else:
+                test_idx.extend(scaffold_set)
+                test_groups += 1
+
+        return sorted(train_idx), sorted(test_idx)
+
     def split_stratified(
         self,
         df: pd.DataFrame,

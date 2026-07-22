@@ -110,7 +110,13 @@ def evaluate_target_tcid(model, loader, thresholds, target_index):
 
 
 def make_target_holdout_split(df, target_tcid, splitter, seed):
-    """Split one TC-ID's substrate associations into 50/50 train/test halves.
+    """Split one TC-ID's substrate associations into train/test halves.
+
+    With splitter="random", the two halves are balanced 50/50 by molecule
+    count. With splitter="scaffold", the split instead balances the number
+    of distinct scaffold groups between the two halves (via
+    ScaffoldSplitter.split_balanced_groups), so the molecule count can be
+    skewed when scaffold group sizes are uneven.
 
     The held-out half is excluded from training and validation entirely (no
     graph, no label, for any TC-ID) and is only ever seen at the final,
@@ -141,11 +147,8 @@ def make_target_holdout_split(df, target_tcid, splitter, seed):
             .reset_index(drop=True)
         )
         scaffold_splitter = ScaffoldSplitter()
-        train_pos, _, test_pos = scaffold_splitter.split(
+        train_pos, test_pos = scaffold_splitter.split_balanced_groups(
             df=target_df,
-            frac_train=0.5,
-            frac_valid=0.0,
-            frac_test=0.5,
             random_state=seed,
         )
         train_pos = np.asarray(train_pos, dtype=int)
@@ -307,7 +310,20 @@ if __name__ == "__main__":
         "--parameter-batch-size-int", default=128, type=int, help="Batch size"
     )
     parser.add_argument(
-        "--parameter-splitter-str", default="random", choices=["random", "scaffold"], help="Splitter to use"
+        "--parameter-splitter-str", default="random", choices=["random", "scaffold"],
+        help=(
+            "Splitter to use. In target-holdout mode (--parameter-tcid-str set), "
+            "this controls only the CV-pool k-fold (rest of the dataset); use "
+            "--parameter-target-splitter-str to control the TC-ID 50/50 holdout split."
+        ),
+    )
+    parser.add_argument(
+        "--parameter-target-splitter-str", default=None, choices=["random", "scaffold"],
+        help=(
+            "Splitter used for the TC-ID 50/50 holdout split (target train half vs "
+            "held-out test half). Only relevant with --parameter-tcid-str. "
+            "Defaults to --parameter-splitter-str if not set."
+        ),
     )
     parser.add_argument(
         "--parameter-tcid-str", help=("Use this TC-ID for a 50/50 substrate-association holdout. "
@@ -325,6 +341,7 @@ if __name__ == "__main__":
     batch_size = args.parameter_batch_size_int
     file_dataset_csv = args.input_dataset_csv
     splitter_params = args.parameter_splitter_str
+    target_splitter_params = args.parameter_target_splitter_str or splitter_params
     split_tcid = args.parameter_tcid_str
     file_pyoverdine_xlsx = args.input_pyoverdine_xlsx
 
@@ -391,7 +408,7 @@ if __name__ == "__main__":
         target_split_info = make_target_holdout_split(
             df=df,
             target_tcid=split_tcid,
-            splitter=splitter_params,
+            splitter=target_splitter_params,
             seed=seed,
         )
 
@@ -428,7 +445,9 @@ if __name__ == "__main__":
             f"target train half={len(target_split_info['target_train_indices'])}, "
             f"target test half (excluded from training)={len(test_indices)}, "
             f"CV pool={len(target_split_info['cv_pool_indices'])}, "
-            f"kfold={kfold}"
+            f"kfold={kfold}, "
+            f"target splitter={target_splitter_params}, "
+            f"cv-pool splitter={splitter_params}"
         )
 
     elif splitter_params == "random":
@@ -590,7 +609,8 @@ if __name__ == "__main__":
                 target_index=target_index,
             )
             target_metrics["tcid"] = split_tcid
-            target_metrics["splitter"] = splitter_params
+            target_metrics["splitter"] = target_splitter_params
+            target_metrics["cv_pool_splitter"] = splitter_params
             target_metrics["seed"] = seed
             stats_fold["target_tcid_metrics"] = target_metrics
             fold_metrics.append(target_metrics["recall"])
