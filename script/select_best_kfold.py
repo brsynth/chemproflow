@@ -66,9 +66,10 @@ if __name__ == "__main__":
     output_csv = args.output_results_csv
 
     datas = []
-    for tcid, split, seed in itertools.product(["2.A.66.1.8", "2.A.66.1.16", "2.A.1.19.29", "2.A.66.1.14", "2.A.6.2.7"], ["random", "scaffold"], ["42", "43", "44"]):
+    for tcid, split, seed in tqdm(itertools.product(["2.A.66.1.8", "2.A.66.1.16", "2.A.1.19.29", "2.A.66.1.14", "2.A.6.2.7"], ["random", "scaffold"], ["42", "43", "44"]), desc="Loop over dirs"):
         curdir = os.path.join(analysis_dir, f"tcid_vs_smiles_{tcid}_{split}_{seed}")
-        stats = read_json(path=os.path.join(curdir, "kfold.json"))
+        file_kfold_json =os.path.join(curdir, "kfold.json")
+        stats = read_json(path=file_kfold_json)
         best_fold_idx, best_metrics = select_best_fold(stats, curdir)
         data = {
             "tcid": best_metrics["tcid"],
