@@ -20,9 +20,16 @@ dependencies:
   - rdkit=2024.9.3
   - scikit-learn=1.7.2
   - scikit-multilearn=0.2.0
+  - scipy=1.17.1
   - seaborn
   - tensorboard
   - torchmetrics
   - tqdm
   # More
-  #- umap-learn
+  # - ipympl
+  # - ipywidgets
+  # - matplotlib_venn
+  # - openpyxl
+  # - pip:
+  #   - pycirclize
+  # - umap-learn
