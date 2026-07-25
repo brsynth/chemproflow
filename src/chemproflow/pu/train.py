@@ -433,6 +433,26 @@ if __name__ == "__main__":
     torch.save(test_y, os.path.join(final_dir, "test_y.pt"))
     torch.save(test_dirichlet_probs, os.path.join(final_dir, "test_dirichlet_probs.pt"))
 
+    # Smiles-aligned, framework-agnostic export (plain csv: no torch/lightning
+    # needed to read it back) so other environments (e.g. DeepChem/sklearn,
+    # which cannot coexist with this one) can compare predictions on the same
+    # test molecules without needing to load this environment's stack.
+    test_predictions_df = pd.DataFrame(
+        {
+            "smiles": [d.smiles for d in test_datas],
+            "y_true": test_y,
+            "score": test_dirichlet_probs,
+            "threshold": best_fold["threshold"],
+        }
+    )
+    assert not test_predictions_df["smiles"].duplicated().any(), (
+        "Duplicate SMILES in test set; downstream cross-environment merge by "
+        "smiles would silently corrupt alignment."
+    )
+    test_predictions_df.to_csv(
+        os.path.join(final_dir, "test_predictions.csv"), index=False
+    )
+
     elapsed_seconds = time.time() - start_time
 
     final_summary = {
