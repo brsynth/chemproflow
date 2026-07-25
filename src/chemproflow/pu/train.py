@@ -1,7 +1,8 @@
 import argparse
 import os
+import shutil
+import time
 from collections import Counter
-from numbers import Number
 
 from chemproflow.model.dataset import mol_to_graph
 from chemproflow.utils.misc import set_seed, write_json, write_pickle
@@ -59,6 +60,8 @@ def dirichlet_feature_map(probabilities, eps=1e-6):
 
 
 if __name__ == "__main__":
+    start_time = time.time()
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--input-dataset-csv", required=True, help="Dataset")
     parser.add_argument(
@@ -156,6 +159,7 @@ if __name__ == "__main__":
         raise ValueError("Splitter parameter unknown")
 
     fold_metrics = []
+    fold_dirichlet_clfs = []
     stats = {}
     for fold_idx, train_pos, val_pos in split_iterator:
         print(f"=== Fold {fold_idx} / {kfold} ===")
@@ -237,8 +241,6 @@ if __name__ == "__main__":
         )
 
         model.estimate_elkan_c(calibration_loader)
-        print("Test")
-        wrap_model.test(test_loader=test_loader)
 
         model.eval()
         device = next(model.parameters()).device
@@ -262,31 +264,40 @@ if __name__ == "__main__":
 
         ths = np.linspace(0.01, 0.99, 99)
 
-        test_probs, test_y = [], []
-        with torch.no_grad():
-            for batch in test_loader:
-                batch = batch.to(device)
-                logits = model(batch).squeeze(-1)
-                probs = torch.sigmoid(logits).cpu().numpy()
-                test_probs.append(probs)
-                test_y.append(batch.y.cpu().numpy())
-
-        test_probs = np.concatenate(test_probs)
-        test_y = np.concatenate(test_y).astype(int)
-
-        test_corrected = np.clip(test_probs / c_hat, 0.0, 1.0)
-        torch.save(test_corrected, os.path.join(outdir_kfold, f"test_corrected.pt"))
-        torch.save(test_y, os.path.join(outdir_kfold, f"test_y.pt"))
-        ece_uncalibrated = expected_calibration_error(test_corrected, test_y)
+        print("== Before calibration (Elkan-Noto corrected probs only) ==")
+        roc_auc_uncal = float(roc_auc_score(val_y, val_corrected))
+        pr_auc_uncal = float(average_precision_score(val_y, val_corrected))
+        f1s_uncal = [
+            f1_score(val_y, (val_corrected >= t).astype(int), zero_division=0)
+            for t in ths
+        ]
+        best_idx_uncal = int(np.argmax(f1s_uncal))
+        best_th_uncal = float(ths[best_idx_uncal])
+        best_f1_uncal = float(f1s_uncal[best_idx_uncal])
+        brier_uncal = float(brier_score_loss(val_y, val_corrected))
+        ece_uncal = expected_calibration_error(val_corrected, val_y)
         print(
-            f"ECE (uncalibrated Elkan-Noto probs, 15 bins): {ece_uncalibrated * 100:.2f}%"
+            f"Fold {fold_idx}: val ROC AUC={roc_auc_uncal:.3f}, PR AUC={pr_auc_uncal:.3f}, "
+            f"F1={best_f1_uncal:.3f} @ th={best_th_uncal:.3f}, Brier={brier_uncal:.3f}, "
+            f"ECE={ece_uncal * 100:.2f}%"
         )
 
-        print("== Dirichlet-calibrated ==")
+        model_before_calibration_path = os.path.join(
+            outdir_kfold, "model_before_calibration.ckpt"
+        )
+        shutil.copy(
+            wrap_model.checkpoint_callback.best_model_path,
+            model_before_calibration_path,
+        )
+        print(f"Saved model (before calibration) to {model_before_calibration_path}")
+
+        print("== After calibration (Dirichlet, fit on validation only) ==")
         dirichlet_clf = LogisticRegression(max_iter=1000)
         val_dirichlet_features = dirichlet_feature_map(val_corrected)
         dirichlet_clf.fit(val_dirichlet_features, val_y)
         val_dirichlet_probs = dirichlet_clf.predict_proba(val_dirichlet_features)[:, 1]
+        val_roc_auc_dir = float(roc_auc_score(val_y, val_dirichlet_probs))
+        pr_auc_dir = float(average_precision_score(val_y, val_dirichlet_probs))
         f1s_dir = [
             f1_score(val_y, (val_dirichlet_probs >= t).astype(int), zero_division=0)
             for t in ths
@@ -294,54 +305,54 @@ if __name__ == "__main__":
         best_idx_dir = int(np.argmax(f1s_dir))
         best_th_dir = float(ths[best_idx_dir])
         best_f1_dir = float(f1s_dir[best_idx_dir])
+        brier_dir = float(brier_score_loss(val_y, val_dirichlet_probs))
+        ece_dir = expected_calibration_error(val_dirichlet_probs, val_y)
         print(
-            f"Best threshold (Dirichlet, fold {fold_idx}): {best_th_dir:.3f} with F1={best_f1_dir:.3f}"
+            f"Fold {fold_idx}: val ROC AUC={val_roc_auc_dir:.3f}, PR AUC={pr_auc_dir:.3f}, "
+            f"F1={best_f1_dir:.3f} @ th={best_th_dir:.3f}, Brier={brier_dir:.3f}, "
+            f"ECE={ece_dir * 100:.2f}%"
         )
 
-        test_dirichlet_features = dirichlet_feature_map(test_corrected)
-        test_dirichlet_probs = dirichlet_clf.predict_proba(test_dirichlet_features)[
-            :, 1
-        ]
-        test_pred_dir = (test_dirichlet_probs >= best_th_dir).astype(int)
-
-        print(classification_report(test_y, test_pred_dir, digits=3))
-        classif_report = classification_report(
-            test_y, test_pred_dir, digits=3, output_dict=True
-        )
-        roc_auc_dir = float(roc_auc_score(test_y, test_dirichlet_probs))
-        pr_auc_dir = float(average_precision_score(test_y, test_dirichlet_probs))
-        test_f1_dir = float(f1_score(test_y, test_pred_dir, zero_division=0))
-        brier_dir = float(brier_score_loss(test_y, test_dirichlet_probs))
-        torch.save(
-            test_dirichlet_probs, os.path.join(outdir_kfold, f"test_dirichlet_probs.pt")
-        )
-        ece_dir = expected_calibration_error(test_dirichlet_probs, test_y)
-
-        dirichlet_bundle = {
+        model_after_calibration_bundle = {
             "model": dirichlet_clf,
             "threshold": best_th_dir,
             "feature_names": ["log_p", "log_1_minus_p", "p"],
+            "elkan_c": c_hat,
+            "base_checkpoint": model_before_calibration_path,
         }
-        file_dirichlet_pkl = os.path.join(outdir_kfold, "dirichlet_calibrator.pkl")
-        write_pickle(data=dirichlet_bundle, path=file_dirichlet_pkl)
+        model_after_calibration_path = os.path.join(
+            outdir_kfold, "model_after_calibration.pkl"
+        )
+        write_pickle(
+            data=model_after_calibration_bundle, path=model_after_calibration_path
+        )
+        print(f"Saved model (after calibration) to {model_after_calibration_path}")
 
-        print(f"Saved Dirichlet calibrator to {file_dirichlet_pkl}")
-
-        print(f"ROC AUC (Dirichlet): {roc_auc_dir:.3f}")
-        print(f"PR AUC (Dirichlet): {pr_auc_dir:.3f}")
-        print(f"Test F1 (Dirichlet threshold): {test_f1_dir:.3f}")
-        print(f"Brier score (Dirichlet): {brier_dir:.3f}")
-        print(f"ECE (Dirichlet, 15 bins): {ece_dir * 100:.2f}%")
-
+        fold_dirichlet_clfs.append(dirichlet_clf)
         fold_metrics.append(
             {
-                "ece_uncal": ece_uncalibrated,
-                "roc_auc_dir": roc_auc_dir,
-                "pr_auc_dir": pr_auc_dir,
-                "f1_dir": test_f1_dir,
-                "brier_dir": brier_dir,
-                "ece_dir": ece_dir,
-                "classification_report": classif_report,
+                "elkan_c": c_hat,
+                "checkpoint_path": model_before_calibration_path,
+                "before_calibration": {
+                    "roc_auc": roc_auc_uncal,
+                    "pr_auc": pr_auc_uncal,
+                    "f1": best_f1_uncal,
+                    "threshold": best_th_uncal,
+                    "brier": brier_uncal,
+                    "ece": ece_uncal,
+                },
+                "after_calibration": {
+                    "roc_auc": val_roc_auc_dir,
+                    "pr_auc": pr_auc_dir,
+                    "f1": best_f1_dir,
+                    "threshold": best_th_dir,
+                    "brier": brier_dir,
+                    "ece": ece_dir,
+                },
+                "val_roc_auc_dir": val_roc_auc_dir,
+                "val_f1_dir": best_f1_dir,
+                "threshold": best_th_dir,
+                "dirichlet_calibrator_path": model_after_calibration_path,
             }
         )
 
@@ -351,23 +362,95 @@ if __name__ == "__main__":
     file_fold_metrics_json = os.path.join(outdir, "fold_metrics.json")
     write_json(data=dict(fold_metrics=fold_metrics), path=file_fold_metrics_json)
 
-    print("=== Cross-validation summary ===")
+    print("=== Cross-validation summary (validation only, test not touched yet) ===")
     for idx, metrics in enumerate(fold_metrics, start=1):
+        before = metrics["before_calibration"]
+        after = metrics["after_calibration"]
         print(
-            f"Fold {idx}: ECE(unscaled)={metrics['ece_uncal'] * 100:.2f}% | Dir ROC AUC={metrics['roc_auc_dir']:.3f}, "
-            f"PR AUC={metrics['pr_auc_dir']:.3f}, F1={metrics['f1_dir']:.3f}, "
-            f"Brier={metrics['brier_dir']:.3f}, ECE={metrics['ece_dir'] * 100:.2f}%"
+            f"Fold {idx}: before calib. ROC AUC={before['roc_auc']:.3f}, F1={before['f1']:.3f} "
+            f"| after calib. ROC AUC={after['roc_auc']:.3f}, F1={after['f1']:.3f} "
+            f"| Elkan c={metrics['elkan_c']:.4f}"
         )
+    mean_val_roc_auc = float(np.mean([m["val_roc_auc_dir"] for m in fold_metrics]))
+    print(f"Mean val ROC AUC (after calibration) across folds: {mean_val_roc_auc:.3f}")
 
-    mean_metrics = {}
-    for key in fold_metrics[0]:
-        values = [metrics[key] for metrics in fold_metrics]
-        if all(isinstance(value, Number) for value in values):
-            mean_metrics[key] = float(np.mean(values))
+    print("=== Select final model (validation-based, test set not involved) ===")
+    best_fold_idx = int(np.argmax([m["val_roc_auc_dir"] for m in fold_metrics]))
+    best_fold = fold_metrics[best_fold_idx]
+    best_dirichlet_clf = fold_dirichlet_clfs[best_fold_idx]
+    print(
+        f"Selected fold {best_fold_idx} as final model "
+        f"(val ROC AUC Dirichlet={best_fold['val_roc_auc_dir']:.3f})"
+    )
 
-    print(f"Mean ROC AUC (Dirichlet): {mean_metrics['roc_auc_dir']:.3f}")
-    print(f"Mean PR AUC (Dirichlet): {mean_metrics['pr_auc_dir']:.3f}")
-    print(f"Mean Test F1 (Dirichlet threshold): {mean_metrics['f1_dir']:.3f}")
-    print(f"Mean Brier score (Dirichlet): {mean_metrics['brier_dir']:.3f}")
-    print(f"Mean ECE (uncalibrated): {mean_metrics['ece_uncal'] * 100:.2f}%")
-    print(f"Mean ECE (Dirichlet): {mean_metrics['ece_dir'] * 100:.2f}%")
+    print("=== Final test evaluation (single pass, selected model only) ===")
+    final_model = ModelTransport.load_from_checkpoint(best_fold["checkpoint_path"])
+    final_model.eval()
+    device = next(final_model.parameters()).device
+
+    test_probs, test_y = [], []
+    with torch.no_grad():
+        for batch in test_loader:
+            batch = batch.to(device)
+            logits = final_model(batch).squeeze(-1)
+            test_probs.append(torch.sigmoid(logits).cpu().numpy())
+            test_y.append(batch.y.cpu().numpy())
+    test_probs = np.concatenate(test_probs)
+    test_y = np.concatenate(test_y).astype(int)
+
+    test_corrected = np.clip(test_probs / best_fold["elkan_c"], 0.0, 1.0)
+
+    print("-- After calibration (Dirichlet) --")
+    test_dirichlet_features = dirichlet_feature_map(test_corrected)
+    test_dirichlet_probs = best_dirichlet_clf.predict_proba(test_dirichlet_features)[:, 1]
+    test_pred_dir = (test_dirichlet_probs >= best_fold["threshold"]).astype(int)
+
+    print(classification_report(test_y, test_pred_dir, digits=3))
+    classif_report = classification_report(
+        test_y, test_pred_dir, digits=3, output_dict=True
+    )
+    roc_auc_dir = float(roc_auc_score(test_y, test_dirichlet_probs))
+    pr_auc_dir = float(average_precision_score(test_y, test_dirichlet_probs))
+    test_f1_dir = float(f1_score(test_y, test_pred_dir, zero_division=0))
+    brier_dir = float(brier_score_loss(test_y, test_dirichlet_probs))
+    ece_dir = expected_calibration_error(test_dirichlet_probs, test_y)
+    print(
+        f"ROC AUC={roc_auc_dir:.3f}, PR AUC={pr_auc_dir:.3f}, F1={test_f1_dir:.3f}, "
+        f"Brier={brier_dir:.3f}, ECE={ece_dir * 100:.2f}%"
+    )
+
+    final_dir = os.path.join(outdir, "final_model")
+    os.makedirs(final_dir, exist_ok=True)
+    shutil.copy(
+        best_fold["checkpoint_path"],
+        os.path.join(final_dir, "model_before_calibration.ckpt"),
+    )
+    shutil.copy(
+        best_fold["dirichlet_calibrator_path"],
+        os.path.join(final_dir, "model_after_calibration.pkl"),
+    )
+    torch.save(test_corrected, os.path.join(final_dir, "test_corrected.pt"))
+    torch.save(test_y, os.path.join(final_dir, "test_y.pt"))
+    torch.save(test_dirichlet_probs, os.path.join(final_dir, "test_dirichlet_probs.pt"))
+
+    elapsed_seconds = time.time() - start_time
+
+    final_summary = {
+        "selected_fold": best_fold_idx,
+        "selection_criterion": "val_roc_auc_dir (after calibration)",
+        "val_roc_auc_dir": best_fold["val_roc_auc_dir"],
+        "elkan_c": best_fold["elkan_c"],
+        "test_metrics": {
+            "roc_auc": roc_auc_dir,
+            "pr_auc": pr_auc_dir,
+            "f1": test_f1_dir,
+            "threshold": best_fold["threshold"],
+            "brier": brier_dir,
+            "ece": ece_dir,
+            "classification_report": classif_report,
+        },
+        "execution_time_seconds": elapsed_seconds,
+    }
+    write_json(data=final_summary, path=os.path.join(final_dir, "summary.json"))
+    print(f"Final model artifacts saved to {final_dir}")
+    print(f"Total execution time: {elapsed_seconds / 60:.2f} min ({elapsed_seconds:.1f} s)")
