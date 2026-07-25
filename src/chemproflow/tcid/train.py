@@ -2,6 +2,7 @@ import argparse
 from collections import Counter
 import os
 import shutil
+import time
 
 from chemproflow.model.dataset import mol_to_graph
 from chemproflow.utils.misc import set_seed, write_json, write_pickle
@@ -294,6 +295,8 @@ def build_target_cv_splits(
 
 
 if __name__ == "__main__":
+    start_time = time.time()
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--input-dataset-csv", required=True, help="Dataset"
@@ -682,5 +685,10 @@ if __name__ == "__main__":
         label: float(final_thresholds[idx]) for idx, label in enumerate(encoder.classes_)
     }
     write_json(data=final_thresholds_dict, path=os.path.join(final_dir, "thresholds.json"))
+
+    elapsed_seconds = time.time() - start_time
+    final_summary["execution_time_seconds"] = elapsed_seconds
+
     write_json(data=final_summary, path=os.path.join(final_dir, "summary.json"))
     print(f"Final model artifacts saved to {final_dir}")
+    print(f"Total execution time: {elapsed_seconds / 60:.2f} min ({elapsed_seconds:.1f} s)")
