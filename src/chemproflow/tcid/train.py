@@ -1,6 +1,7 @@
 import argparse
 from collections import Counter
 import os
+import shutil
 
 from chemproflow.model.dataset import mol_to_graph
 from chemproflow.utils.misc import set_seed, write_json, write_pickle
@@ -529,6 +530,7 @@ if __name__ == "__main__":
         raise ValueError("Splitter parameter unknown")
     
     fold_metrics = []
+    fold_records = []
     per_fold_thresholds = {}
     stats = {}
     for fold_idx, train_indices, valid_indices in split_iterator:
@@ -597,37 +599,24 @@ if __name__ == "__main__":
             "thresholds_file": file_thresholds_json,
         }
 
-        print("Test")
-        test_metrics = evaluate_with_thresholds(wrap_model.model, test_loader, fold_threshold_values)
-        stats_fold["test_threshold_metrics"] = test_metrics
+        print("Validate (selection signal; test set is not touched per fold)")
+        valid_metrics = evaluate_with_thresholds(wrap_model.model, valid_loader, fold_threshold_values)
+        stats_fold["valid_threshold_metrics"] = valid_metrics
+        fold_metrics.append(valid_metrics["f1"])
+        print(
+            f"Valid F1={valid_metrics['f1']:.3f} "
+            f"Precision={valid_metrics['precision']:.3f} "
+            f"Recall={valid_metrics['recall']:.3f}"
+        )
 
-        if target_mode:
-            target_metrics = evaluate_target_tcid(
-                wrap_model.model,
-                test_loader,
-                fold_threshold_values,
-                target_index=target_index,
-            )
-            target_metrics["tcid"] = split_tcid
-            target_metrics["splitter"] = target_splitter_params
-            target_metrics["cv_pool_splitter"] = splitter_params
-            target_metrics["seed"] = seed
-            stats_fold["target_tcid_metrics"] = target_metrics
-            fold_metrics.append(target_metrics["recall"])
-            print(
-                f"Target {split_tcid} recovery: "
-                f"{target_metrics['recovered']}/{target_metrics['support']} "
-                f"Recall={target_metrics['recall']:.3f} "
-                f"Precision={target_metrics['precision']:.3f} "
-                f"F1={target_metrics['f1']:.3f}"
-            )
-        else:
-            fold_metrics.append(test_metrics["f1"])
-            print(
-                f"Thresholded Test F1={test_metrics['f1']:.3f} "
-                f"Precision={test_metrics['precision']:.3f} "
-                f"Recall={test_metrics['recall']:.3f}"
-            )
+        fold_records.append(
+            {
+                "fold_idx": fold_idx,
+                "valid_f1": valid_metrics["f1"],
+                "checkpoint_path": wrap_model.checkpoint_callback.best_model_path,
+                "thresholds": fold_threshold_values,
+            }
+        )
 
         stats[str(fold_idx)] = stats_fold
 
@@ -637,8 +626,61 @@ if __name__ == "__main__":
     file_thresholds_summary = os.path.join(outdir, "per_label_thresholds.json")
     write_json(data=per_fold_thresholds, path=file_thresholds_summary)
 
-    print("Fold results:", fold_metrics)
+    print("Fold results (validation F1, test not involved):", fold_metrics)
+    print("Mean valid F1:", np.nanmean(fold_metrics))
+
+    print("=== Select final model (validation-based, test set not involved) ===")
+    best_fold_idx = int(np.argmax([r["valid_f1"] for r in fold_records]))
+    best_fold = fold_records[best_fold_idx]
+    print(
+        f"Selected fold {best_fold['fold_idx']} as final model "
+        f"(valid F1={best_fold['valid_f1']:.3f})"
+    )
+
+    print("=== Final test evaluation (single pass, selected model only) ===")
+    final_model = ModelTcid.load_from_checkpoint(best_fold["checkpoint_path"])
+    final_thresholds = best_fold["thresholds"]
+
+    test_metrics = evaluate_with_thresholds(final_model, test_loader, final_thresholds)
+    print(
+        f"Thresholded Test F1={test_metrics['f1']:.3f} "
+        f"Precision={test_metrics['precision']:.3f} "
+        f"Recall={test_metrics['recall']:.3f}"
+    )
+
+    final_summary = {
+        "selected_fold": best_fold["fold_idx"],
+        "selection_criterion": "valid_f1_weighted",
+        "valid_f1": best_fold["valid_f1"],
+        "test_threshold_metrics": test_metrics,
+    }
+
     if target_mode:
-        print("Mean target recall:", np.nanmean(fold_metrics))
-    else:
-        print("Mean F1:", np.nanmean(fold_metrics))
+        target_metrics = evaluate_target_tcid(
+            final_model,
+            test_loader,
+            final_thresholds,
+            target_index=target_index,
+        )
+        target_metrics["tcid"] = split_tcid
+        target_metrics["splitter"] = target_splitter_params
+        target_metrics["cv_pool_splitter"] = splitter_params
+        target_metrics["seed"] = seed
+        final_summary["target_tcid_metrics"] = target_metrics
+        print(
+            f"Target {split_tcid} recovery: "
+            f"{target_metrics['recovered']}/{target_metrics['support']} "
+            f"Recall={target_metrics['recall']:.3f} "
+            f"Precision={target_metrics['precision']:.3f} "
+            f"F1={target_metrics['f1']:.3f}"
+        )
+
+    final_dir = os.path.join(outdir, "final_model")
+    os.makedirs(final_dir, exist_ok=True)
+    shutil.copy(best_fold["checkpoint_path"], os.path.join(final_dir, "model.ckpt"))
+    final_thresholds_dict = {
+        label: float(final_thresholds[idx]) for idx, label in enumerate(encoder.classes_)
+    }
+    write_json(data=final_thresholds_dict, path=os.path.join(final_dir, "thresholds.json"))
+    write_json(data=final_summary, path=os.path.join(final_dir, "summary.json"))
+    print(f"Final model artifacts saved to {final_dir}")

@@ -34,31 +34,26 @@ def build_dataset(curdir: str, kfold: int):
                     datas.append(data)
     return pd.DataFrame(datas)
 
-def select_best_fold(stats, analysis_dir):
-    """Pick the fold whose target-recovery F1 (chemproflow.tcid.train's
-    evaluate_target_tcid output) is highest."""
-    best_fold_idx = None
-    best_metrics = None
-    best_f1 = float("-inf")
-
-    for fold_idx, stats_fold in stats.items():
-        target_metrics = stats_fold.get("target_tcid_metrics")
-        if target_metrics is None:
-            raise ValueError(
-                f"Fold {fold_idx!r} in {analysis_dir!r} has no 'target_tcid_metrics'; "
-                "this tool expects a train.py run launched with --parameter-tcid-str."
-            )
-        if target_metrics["f1"] > best_f1:
-            best_f1 = target_metrics["f1"]
-            best_fold_idx = fold_idx
-            best_metrics = target_metrics
-
-    return best_fold_idx, best_metrics
+def select_best_fold(analysis_dir):
+    """Read the fold chemproflow.tcid.train already selected on validation
+    (final_model/summary.json), along with its single, honest test-set
+    target-recovery evaluation. Do NOT re-derive a "best fold" by comparing
+    per-fold test metrics here -- that would select the fold using the test
+    set, which is exactly the leakage this tool used to have."""
+    file_summary_json = os.path.join(analysis_dir, "final_model", "summary.json")
+    summary = read_json(path=file_summary_json)
+    target_metrics = summary.get("target_tcid_metrics")
+    if target_metrics is None:
+        raise ValueError(
+            f"{file_summary_json!r} has no 'target_tcid_metrics'; this tool "
+            "expects a train.py run launched with --parameter-tcid-str."
+        )
+    return summary["selected_fold"], target_metrics
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input-analysis-str", required=True, help="Output directory produced by chemproflow.tcid.train (contains kfold.json)")
+    parser.add_argument("--input-analysis-str", required=True, help="Output directory produced by chemproflow.tcid.train (contains final_model/summary.json)")
     parser.add_argument("--output-results-csv", required=True, help="Where to write the best-fold summary. ")
     args = parser.parse_args()
 
@@ -68,9 +63,7 @@ if __name__ == "__main__":
     datas = []
     for tcid, split, seed in tqdm(itertools.product(["2.A.66.1.8", "2.A.66.1.16", "2.A.1.19.29", "2.A.66.1.14", "2.A.6.2.7"], ["random", "scaffold"], ["42", "43", "44"]), desc="Loop over dirs"):
         curdir = os.path.join(analysis_dir, f"tcid_vs_smiles_{tcid}_{split}_{seed}")
-        file_kfold_json =os.path.join(curdir, "kfold.json")
-        stats = read_json(path=file_kfold_json)
-        best_fold_idx, best_metrics = select_best_fold(stats, curdir)
+        best_fold_idx, best_metrics = select_best_fold(curdir)
         data = {
             "tcid": best_metrics["tcid"],
             "splitter": best_metrics["splitter"],
