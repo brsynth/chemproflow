@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import pickle
 import random
@@ -115,7 +116,7 @@ def is_valid_graph_feature(feat):
 def parse_pt_for_sklearn(path: str, cache: Optional[Dict] = None):
     datas = torch.load(path, weights_only=False)
     print("Count data:", len(datas))
-    labels, features = [], []
+    labels, features, smiles_list = [], [], []
     for data in tqdm(datas, total=len(datas)):
         # Check cache
         feats = np.zeros((1,), dtype=np.float32)
@@ -137,15 +138,17 @@ def parse_pt_for_sklearn(path: str, cache: Optional[Dict] = None):
         label = normalize_label(label)
         labels.append(label)
         features.append(feats)
+        smiles_list.append(data.smiles)
     X = np.stack(features).astype(np.float32)
     y = np.asarray(labels, dtype=int).squeeze()
-    return X, y
+    smiles = np.asarray(smiles_list, dtype=object)
+    return X, y, smiles
 
 def parse_pt_for_deepchem(path: str, cache: Optional[Dict] = None):
     featurizer = dc.feat.MolGraphConvFeaturizer(use_edges=True)
     datas = torch.load(path, weights_only=False)
     print("Count data:", len(datas))
-    features, labels = [], []
+    features, labels, smiles_list = [], [], []
     skipped = 0
     for data in tqdm(datas, total=len(datas)):
         if cache is not None and data.smiles in cache:
@@ -159,6 +162,7 @@ def parse_pt_for_deepchem(path: str, cache: Optional[Dict] = None):
                 cache[data.smiles] = feat
         features.append(feat)
         labels.append(normalize_label(data.y))
+        smiles_list.append(data.smiles)
 
     if skipped:
         print(f"Skipping {skipped} molecules that DeepChem could not featurize.")
@@ -168,8 +172,11 @@ def parse_pt_for_deepchem(path: str, cache: Optional[Dict] = None):
     X = np.empty(len(features), dtype=object)
     X[:] = features
     labels = np.asarray(labels, dtype=np.int64).reshape(-1, 1)
+    # ids carries the smiles through select_dataset() so predictions stay
+    # traceable back to molecules for cross-environment comparison.
+    ids = np.asarray(smiles_list, dtype=object)
 
-    return dc.data.NumpyDataset(X=X, y=labels)
+    return dc.data.NumpyDataset(X=X, y=labels, ids=ids)
 
 def select_dataset(dataset, indices):
     indices = np.asarray(indices, dtype=int)
@@ -291,6 +298,7 @@ if __name__ == "__main__":
     test_dataset = parse_pt_for_deepchem(path=os.path.join(input_chemproflow_str, "test.pt"), cache=cache)
     y_test = test_dataset.y.reshape(-1).astype(int)
     datas = []
+    attentivefp_records = []
     for kfold_ix in range(5):
         kfold_dir = os.path.join(input_chemproflow_str, f"kfold-{kfold_ix}")
         train_dataset = parse_pt_for_deepchem(path=os.path.join(kfold_dir, "train.pt"), cache=cache)
@@ -391,18 +399,61 @@ if __name__ == "__main__":
             "f1": fmt_value_three(test_metrics["f1"]),
             "prec": fmt_value_three(test_metrics["prec"]),
             "rec": fmt_value_three(test_metrics["rec"]),
+            "selected": False,
         }
         datas.append(data)
+        attentivefp_records.append(
+            {
+                "kfold": kfold_ix,
+                "valid_ap": valid_ap,
+                "data": data,
+                "test_score": test_score,
+                "threshold_raw": threshold,
+            }
+        )
         model.save_checkpoint()
-    
+
+    # Select the final AttentiveFP model on validation PR-AUC (threshold-free,
+    # suited to imbalanced PU data -- consistent with the ValidationCallback
+    # metric choice above). The test set is never involved in this choice.
+    best_attentivefp_idx = int(np.argmax([r["valid_ap"] for r in attentivefp_records]))
+    attentivefp_records[best_attentivefp_idx]["data"]["selected"] = True
+    best_attentivefp = attentivefp_records[best_attentivefp_idx]["data"]
+    print(
+        f"AttentiveFP: selected fold {best_attentivefp_idx} as final model "
+        f"(valid PR-AUC={attentivefp_records[best_attentivefp_idx]['valid_ap']:.3f})"
+    )
+
+    # Smiles-aligned, framework-agnostic export (plain csv) of the selected
+    # model's test predictions -- so a DeepChem-free environment can compare
+    # against the other model families without needing this stack installed.
+    attentivefp_dir = os.path.join(output_dir_str, "attentivefp")
+    os.makedirs(attentivefp_dir, exist_ok=True)
+    attentivefp_predictions_df = pd.DataFrame(
+        {
+            "smiles": test_dataset.ids,
+            "y_true": y_test,
+            "score": attentivefp_records[best_attentivefp_idx]["test_score"],
+            "threshold": attentivefp_records[best_attentivefp_idx]["threshold_raw"],
+        }
+    )
+    assert not attentivefp_predictions_df["smiles"].duplicated().any(), (
+        "Duplicate SMILES in test set; downstream cross-environment merge by "
+        "smiles would silently corrupt alignment."
+    )
+    attentivefp_predictions_df.to_csv(
+        os.path.join(attentivefp_dir, "test_predictions.csv"), index=False
+    )
+
     print("RF")
     cache = {}
-    X_test, y_test = parse_pt_for_sklearn(path=os.path.join(input_chemproflow_str, "test.pt"), cache=cache)
+    X_test, y_test, smiles_test = parse_pt_for_sklearn(path=os.path.join(input_chemproflow_str, "test.pt"), cache=cache)
+    rf_records = []
     for kfold_ix in range(5):
         kfold_dir = os.path.join(input_chemproflow_str, f"kfold-{kfold_ix}")
-        X_train, y_train = parse_pt_for_sklearn(path=os.path.join(kfold_dir, "train.pt"), cache=cache)
-        X_valid, y_valid = parse_pt_for_sklearn(path=os.path.join(kfold_dir, "valid.pt"), cache=cache)
-        X_calib, y_calib = parse_pt_for_sklearn(path=os.path.join(kfold_dir, "calibration.pt"), cache=cache)
+        X_train, y_train, _ = parse_pt_for_sklearn(path=os.path.join(kfold_dir, "train.pt"), cache=cache)
+        X_valid, y_valid, _ = parse_pt_for_sklearn(path=os.path.join(kfold_dir, "valid.pt"), cache=cache)
+        X_calib, y_calib, _ = parse_pt_for_sklearn(path=os.path.join(kfold_dir, "calibration.pt"), cache=cache)
 
         model = RandomForestClassifier(
             n_estimators=500,
@@ -452,14 +503,66 @@ if __name__ == "__main__":
             "f1": fmt_value_three(test_metrics["f1"]),
             "prec": fmt_value_three(test_metrics["prec"]),
             "rec": fmt_value_three(test_metrics["rec"]),
+            "selected": False,
         }
         datas.append(data)
+        rf_records.append(
+            {
+                "kfold": kfold_ix,
+                "valid_ap": valid_ap,
+                "data": data,
+                "test_score": test_score,
+                "threshold_raw": best_threshold,
+            }
+        )
 
         rf_dir = os.path.join(output_dir_str, "rf", f"kfold-{kfold_ix}")
         os.makedirs(rf_dir, exist_ok=True)
         with open(os.path.join(rf_dir, "model.pkl"), "wb") as fd:
             pickle.dump(model, fd, protocol=pickle.HIGHEST_PROTOCOL)
 
+    # Select the final RF model on validation PR-AUC only -- test set not involved.
+    best_rf_idx = int(np.argmax([r["valid_ap"] for r in rf_records]))
+    rf_records[best_rf_idx]["data"]["selected"] = True
+    best_rf = rf_records[best_rf_idx]["data"]
+    print(
+        f"RF: selected fold {best_rf_idx} as final model "
+        f"(valid PR-AUC={rf_records[best_rf_idx]['valid_ap']:.3f})"
+    )
+
+    rf_predictions_df = pd.DataFrame(
+        {
+            "smiles": smiles_test,
+            "y_true": y_test,
+            "score": rf_records[best_rf_idx]["test_score"],
+            "threshold": rf_records[best_rf_idx]["threshold_raw"],
+        }
+    )
+    assert not rf_predictions_df["smiles"].duplicated().any(), (
+        "Duplicate SMILES in test set; downstream cross-environment merge by "
+        "smiles would silently corrupt alignment."
+    )
+    rf_predictions_df.to_csv(os.path.join(output_dir_str, "rf", "test_predictions.csv"), index=False)
+
     df = pd.DataFrame(datas)
     df.to_csv(os.path.join(output_dir_str, "results.csv"), index=False)
+
+    # Per-model final pick, chosen on validation only. results.csv keeps every
+    # fold's test row for inspection (via the "selected" column), but this file
+    # is the one honest, non-cherry-picked test score per model family.
+    final_summary = {
+        "attentivefp": {
+            "selected_fold": best_attentivefp_idx,
+            "selection_criterion": "valid_ap",
+            **{k: v for k, v in best_attentivefp.items() if k != "selected"},
+        },
+        "rf": {
+            "selected_fold": best_rf_idx,
+            "selection_criterion": "valid_ap",
+            **{k: v for k, v in best_rf.items() if k != "selected"},
+        },
+    }
+    with open(os.path.join(output_dir_str, "final_summary.json"), "w") as fd:
+        json.dump(final_summary, fd, indent=2)
+
     print("End")
