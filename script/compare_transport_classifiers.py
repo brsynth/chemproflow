@@ -21,6 +21,7 @@ from sklearn.metrics import (
     f1_score,
     precision_score,
     recall_score,
+    roc_auc_score,
 )
 from sklearn.model_selection import train_test_split
 
@@ -226,36 +227,29 @@ def score_binary_predictions(y_true, y_score, threshold=0.5):
     }
 
 def tune_threshold(y_true, y_score):
+    """Grid-search a threshold maximizing F1 -- same mechanism as
+    chemproflow.pu.train (best_th_uncal/best_th_dir there): a fixed,
+    evenly spaced grid over (0.01, 0.99), argmax on F1 alone."""
     y_score = np.asarray(y_score, dtype=float)
-    finite_scores = y_score[np.isfinite(y_score)]
-    if finite_scores.size == 0:
-        raise ValueError("Cannot tune threshold: scores contain no finite values.")
-
-    unique_scores = np.unique(finite_scores)
-    if unique_scores.size == 1:
-        thresholds = np.asarray([unique_scores[0] + np.finfo(float).eps])
-    else:
-        if unique_scores.size > 201:
-            unique_scores = np.unique(np.quantile(finite_scores, np.linspace(0.0, 1.0, 201)))
-        thresholds = (unique_scores[:-1] + unique_scores[1:]) / 2.0
-        thresholds = np.concatenate((thresholds, [np.nextafter(unique_scores[-1], np.inf)]))
-
-    best_threshold = 0.5
-    best_metrics = None
-    best_key = (-1.0, -1.0, -1.0)
-    for threshold in thresholds:
-        metrics = score_binary_predictions(y_true, y_score, threshold=threshold)
-        key = (metrics["f1"], metrics["rec"], metrics["prec"])
-        if key > best_key:
-            best_key = key
-            best_threshold = float(threshold)
-            best_metrics = metrics
+    thresholds = np.linspace(0.01, 0.99, 99)
+    f1_scores = [
+        f1_score(y_true, (y_score >= t).astype(int), zero_division=0)
+        for t in thresholds
+    ]
+    best_idx = int(np.argmax(f1_scores))
+    best_threshold = float(thresholds[best_idx])
+    best_metrics = score_binary_predictions(y_true, y_score, threshold=best_threshold)
     return best_threshold, best_metrics
 
 def safe_average_precision(y_true, y_score):
     if len(np.unique(y_true)) < 2:
         return 0.0
     return float(average_precision_score(y_true, y_score))
+
+def safe_roc_auc(y_true, y_score):
+    if len(np.unique(y_true)) < 2:
+        return 0.0
+    return float(roc_auc_score(y_true, y_score))
 
 def score_summary(y_score):
     y_score = np.asarray(y_score, dtype=float)
@@ -367,11 +361,13 @@ if __name__ == "__main__":
         valid_score = apply_elkan_noto(valid_s, c_en)
         threshold, valid_metrics = tune_threshold(y_valid, valid_score)
         valid_ap = safe_average_precision(y_valid, valid_s)
+        valid_roc_auc = safe_roc_auc(y_valid, valid_s)
 
         test_s = predict_positive_class_proba(model, test_dataset)
         test_score = apply_elkan_noto(test_s, c_en)
         test_metrics = score_binary_predictions(y_test, test_score, threshold=threshold)
         test_ap = safe_average_precision(y_test, test_s)
+        test_roc_auc = safe_roc_auc(y_test, test_s)
         test_score_summary = score_summary(test_score)
         data = {
             "model": "attentivefp",
@@ -380,11 +376,13 @@ if __name__ == "__main__":
             "score_mode": "elkan_noto_corrected",
             "threshold": fmt_value_three(threshold),
             "valid_ap_raw": fmt_value_three(valid_ap),
+            "valid_roc_auc_raw": fmt_value_three(valid_roc_auc),
             "valid_acc": fmt_value_three(valid_metrics["acc"]),
             "valid_f1": fmt_value_three(valid_metrics["f1"]),
             "valid_prec": fmt_value_three(valid_metrics["prec"]),
             "valid_rec": fmt_value_three(valid_metrics["rec"]),
             "test_ap_raw": fmt_value_three(test_ap),
+            "test_roc_auc_raw": fmt_value_three(test_roc_auc),
             "test_score_min": fmt_value_six(test_score_summary["score_min"]),
             "test_score_p25": fmt_value_six(test_score_summary["score_p25"]),
             "test_score_median": fmt_value_six(test_score_summary["score_median"]),
@@ -471,11 +469,13 @@ if __name__ == "__main__":
         valid_score = apply_elkan_noto(valid_s, c_en)
         best_threshold, valid_metrics = tune_threshold(y_valid, valid_score)
         valid_ap = safe_average_precision(y_valid, valid_s)
+        valid_roc_auc = safe_roc_auc(y_valid, valid_s)
 
         test_s = model.predict_proba(X_test)[:, 1]
         test_score = apply_elkan_noto(test_s, c_en)
         test_metrics = score_binary_predictions(y_test, test_score, threshold=best_threshold)
         test_ap = safe_average_precision(y_test, test_s)
+        test_roc_auc = safe_roc_auc(y_test, test_s)
         test_score_summary = score_summary(test_score)
         data = {
             "model": "rf",
@@ -484,11 +484,13 @@ if __name__ == "__main__":
             "score_mode": "elkan_noto_corrected",
             "threshold": fmt_value_three(best_threshold),
             "valid_ap_raw": fmt_value_three(valid_ap),
+            "valid_roc_auc_raw": fmt_value_three(valid_roc_auc),
             "valid_acc": fmt_value_three(valid_metrics["acc"]),
             "valid_f1": fmt_value_three(valid_metrics["f1"]),
             "valid_prec": fmt_value_three(valid_metrics["prec"]),
             "valid_rec": fmt_value_three(valid_metrics["rec"]),
             "test_ap_raw": fmt_value_three(test_ap),
+            "test_roc_auc_raw": fmt_value_three(test_roc_auc),
             "test_score_min": fmt_value_six(test_score_summary["score_min"]),
             "test_score_p25": fmt_value_six(test_score_summary["score_p25"]),
             "test_score_median": fmt_value_six(test_score_summary["score_median"]),
