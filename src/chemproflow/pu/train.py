@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
+    accuracy_score,
     average_precision_score,
     brier_score_loss,
     classification_report,
@@ -277,13 +278,14 @@ if __name__ == "__main__":
         best_th_uncal = float(ths[best_idx_uncal])
         best_f1_uncal = float(f1s_uncal[best_idx_uncal])
         val_pred_uncal = (val_corrected >= best_th_uncal).astype(int)
+        accuracy_uncal = float(accuracy_score(val_y, val_pred_uncal))
         precision_uncal = float(precision_score(val_y, val_pred_uncal, zero_division=0))
         recall_uncal = float(recall_score(val_y, val_pred_uncal, zero_division=0))
         brier_uncal = float(brier_score_loss(val_y, val_corrected))
         ece_uncal = expected_calibration_error(val_corrected, val_y)
         print(
             f"Fold {fold_idx}: val ROC AUC={roc_auc_uncal:.3f}, PR AUC={pr_auc_uncal:.3f}, "
-            f"F1={best_f1_uncal:.3f} @ th={best_th_uncal:.3f}, "
+            f"F1={best_f1_uncal:.3f} @ th={best_th_uncal:.3f}, Accuracy={accuracy_uncal:.3f}, "
             f"Precision={precision_uncal:.3f}, Recall={recall_uncal:.3f}, "
             f"Brier={brier_uncal:.3f}, ECE={ece_uncal * 100:.2f}%"
         )
@@ -312,13 +314,14 @@ if __name__ == "__main__":
         best_th_dir = float(ths[best_idx_dir])
         best_f1_dir = float(f1s_dir[best_idx_dir])
         val_pred_dir = (val_dirichlet_probs >= best_th_dir).astype(int)
+        accuracy_dir = float(accuracy_score(val_y, val_pred_dir))
         precision_dir = float(precision_score(val_y, val_pred_dir, zero_division=0))
         recall_dir = float(recall_score(val_y, val_pred_dir, zero_division=0))
         brier_dir = float(brier_score_loss(val_y, val_dirichlet_probs))
         ece_dir = expected_calibration_error(val_dirichlet_probs, val_y)
         print(
             f"Fold {fold_idx}: val ROC AUC={val_roc_auc_dir:.3f}, PR AUC={pr_auc_dir:.3f}, "
-            f"F1={best_f1_dir:.3f} @ th={best_th_dir:.3f}, "
+            f"F1={best_f1_dir:.3f} @ th={best_th_dir:.3f}, Accuracy={accuracy_dir:.3f}, "
             f"Precision={precision_dir:.3f}, Recall={recall_dir:.3f}, "
             f"Brier={brier_dir:.3f}, ECE={ece_dir * 100:.2f}%"
         )
@@ -350,6 +353,7 @@ if __name__ == "__main__":
                     "roc_auc": roc_auc_uncal,
                     "pr_auc": pr_auc_uncal,
                     "f1": best_f1_uncal,
+                    "accuracy": accuracy_uncal,
                     "precision": precision_uncal,
                     "recall": recall_uncal,
                     "threshold": best_th_uncal,
@@ -360,6 +364,7 @@ if __name__ == "__main__":
                     "roc_auc": val_roc_auc_dir,
                     "pr_auc": pr_auc_dir,
                     "f1": best_f1_dir,
+                    "accuracy": accuracy_dir,
                     "precision": precision_dir,
                     "recall": recall_dir,
                     "threshold": best_th_dir,
@@ -444,12 +449,14 @@ if __name__ == "__main__":
     roc_auc_dir = float(roc_auc_score(test_y, test_dirichlet_probs))
     pr_auc_dir = float(average_precision_score(test_y, test_dirichlet_probs))
     test_f1_dir = float(f1_score(test_y, test_pred_dir, zero_division=0))
+    test_accuracy_dir = float(accuracy_score(test_y, test_pred_dir))
     test_precision_dir = float(precision_score(test_y, test_pred_dir, zero_division=0))
     test_recall_dir = float(recall_score(test_y, test_pred_dir, zero_division=0))
     brier_dir = float(brier_score_loss(test_y, test_dirichlet_probs))
     ece_dir = expected_calibration_error(test_dirichlet_probs, test_y)
     print(
         f"ROC AUC={roc_auc_dir:.3f}, PR AUC={pr_auc_dir:.3f}, F1={test_f1_dir:.3f}, "
+        f"Accuracy={test_accuracy_dir:.3f}, "
         f"Precision={test_precision_dir:.3f}, Recall={test_recall_dir:.3f}, "
         f"Brier={brier_dir:.3f}, ECE={ece_dir * 100:.2f}%"
     )
@@ -499,6 +506,7 @@ if __name__ == "__main__":
             "roc_auc": roc_auc_dir,
             "pr_auc": pr_auc_dir,
             "f1": test_f1_dir,
+            "accuracy": test_accuracy_dir,
             "precision": test_precision_dir,
             "recall": test_recall_dir,
             "threshold": best_fold["threshold"],
