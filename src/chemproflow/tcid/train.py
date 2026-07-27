@@ -599,7 +599,7 @@ if __name__ == "__main__":
         stats_fold["thresholds"] = thresholds_dict
         per_fold_thresholds[str(fold_idx)] = {
             "thresholds": thresholds_dict,
-            "thresholds_file": file_thresholds_json,
+            "thresholds_file": os.path.relpath(file_thresholds_json, outdir),
         }
 
         print("Validate (selection signal; test set is not touched per fold)")
