@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import pickle
-from typing import List
+from typing import List, Set
 
 from chemproflow.utils.misc import read_json
 from chemproflow.model.dataset import build_loader
@@ -136,11 +136,11 @@ class CatalogTcid:
 
         with open(file_tcid_equivalent_json) as fd:
             tcid_equivalent = json.load(fd)
-        tcid_groups = tcid_equivalent["tcid_groups"]  # List[List[str]]
+        self.tcid_groups = tcid_equivalent["tcid_groups"]  # List[List[str]]
 
         # Build a mapping from tcid to its group (set of equivalents)
         tcid_to_group = {}
-        for group in tcid_groups:
+        for group in self.tcid_groups:
             group_set = set(group)
             for tcid in group:
                 tcid_to_group[tcid] = group_set
@@ -154,6 +154,13 @@ class CatalogTcid:
 
         self.df_catalog["tcids"] = self.df_catalog["tcids"].apply(expand_tcids)
 
+    def get_tcid_equivalent(self, tcid: str) -> Set:
+        tcids = set()
+        for group in self.tcid_groups:
+            if tcid in group:
+                tcids.update(group)
+        return tcids
+    
     def map_tcids_organisms(self, tcids: List[str|int], value: str = "accession") -> List[List[str | int]]:
         ids = []
         for tcid in tcids:
