@@ -118,56 +118,65 @@ def make_target_holdout_split(df, target_tcid, splitter, seed):
     count. With splitter="scaffold", the split instead balances the number
     of distinct scaffold groups between the two halves (via
     ScaffoldSplitter.split_balanced_groups), so the molecule count can be
-    skewed when scaffold group sizes are uneven.
+    skewed when scaffold group sizes are uneven. With splitter="train", all
+    of the target's substrates go to the train half and none are held out
+    (100/0) -- there is then no test-set/target-recovery evaluation for this
+    run, since nothing was excluded from training.
 
-    The held-out half is excluded from training and validation entirely (no
-    graph, no label, for any TC-ID) and is only ever seen at the final,
-    external target-recovery evaluation.
+    The held-out half (when non-empty) is excluded from training and
+    validation entirely (no graph, no label, for any TC-ID) and is only ever
+    seen at the final, external target-recovery evaluation.
     """
     target_mask = df["tcid"].apply(lambda values: target_tcid in values).to_numpy()
     target_indices = np.flatnonzero(target_mask)
 
-    if len(target_indices) < 4:
-        raise ValueError(
-            f"TC-ID {target_tcid!r} has only {len(target_indices)} substrates; "
-            "at least 4 are required for a 50/50 holdout."
-        )
-
-    rng = np.random.RandomState(seed)
-
-    if splitter == "random":
-        shuffled = target_indices.copy()
-        rng.shuffle(shuffled)
-        n_test = len(shuffled) // 2
-        test_indices = np.sort(shuffled[:n_test])
-        target_train_indices = np.sort(shuffled[n_test:])
-
-    elif splitter == "scaffold":
-        target_df = (
-            df.loc[target_indices, ["smiles", "tcid"]]
-            .assign(full_index=target_indices)
-            .reset_index(drop=True)
-        )
-        scaffold_splitter = ScaffoldSplitter()
-        train_pos, test_pos = scaffold_splitter.split_balanced_groups(
-            df=target_df,
-            random_state=seed,
-        )
-        train_pos = np.asarray(train_pos, dtype=int)
-        test_pos = np.asarray(test_pos, dtype=int)
-        target_train_indices = np.sort(
-            target_df.loc[train_pos, "full_index"].to_numpy(dtype=int)
-        )
-        test_indices = np.sort(
-            target_df.loc[test_pos, "full_index"].to_numpy(dtype=int)
-        )
+    if splitter == "train":
+        if len(target_indices) < 1:
+            raise ValueError(f"TC-ID {target_tcid!r} has no substrates.")
+        target_train_indices = np.sort(target_indices).astype(int)
+        test_indices = np.array([], dtype=int)
     else:
-        raise ValueError(f"Unknown target splitter: {splitter}")
+        if len(target_indices) < 4:
+            raise ValueError(
+                f"TC-ID {target_tcid!r} has only {len(target_indices)} substrates; "
+                "at least 4 are required for a 50/50 holdout."
+            )
 
-    if len(target_train_indices) == 0 or len(test_indices) == 0:
-        raise ValueError(
-            f"Unable to create non-empty 50/50 split for TC-ID {target_tcid!r}."
-        )
+        rng = np.random.RandomState(seed)
+
+        if splitter == "random":
+            shuffled = target_indices.copy()
+            rng.shuffle(shuffled)
+            n_test = len(shuffled) // 2
+            test_indices = np.sort(shuffled[:n_test])
+            target_train_indices = np.sort(shuffled[n_test:])
+
+        elif splitter == "scaffold":
+            target_df = (
+                df.loc[target_indices, ["smiles", "tcid"]]
+                .assign(full_index=target_indices)
+                .reset_index(drop=True)
+            )
+            scaffold_splitter = ScaffoldSplitter()
+            train_pos, test_pos = scaffold_splitter.split_balanced_groups(
+                df=target_df,
+                random_state=seed,
+            )
+            train_pos = np.asarray(train_pos, dtype=int)
+            test_pos = np.asarray(test_pos, dtype=int)
+            target_train_indices = np.sort(
+                target_df.loc[train_pos, "full_index"].to_numpy(dtype=int)
+            )
+            test_indices = np.sort(
+                target_df.loc[test_pos, "full_index"].to_numpy(dtype=int)
+            )
+        else:
+            raise ValueError(f"Unknown target splitter: {splitter}")
+
+        if len(target_train_indices) == 0 or len(test_indices) == 0:
+            raise ValueError(
+                f"Unable to create non-empty 50/50 split for TC-ID {target_tcid!r}."
+            )
 
     all_indices = np.arange(len(df))
     # The target-training half is fixed in every training fold. The held-out
@@ -322,11 +331,14 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
-        "--parameter-target-splitter-str", default=None, choices=["random", "scaffold"],
+        "--parameter-target-splitter-str", default=None, choices=["random", "scaffold", "train"],
         help=(
-            "Splitter used for the TC-ID 50/50 holdout split (target train half vs "
-            "held-out test half). Only relevant with --parameter-tcid-str. "
-            "Defaults to --parameter-splitter-str if not set."
+            "Splitter used for the TC-ID holdout split (target train half vs "
+            "held-out test half). 'random'/'scaffold' split 50/50; 'train' puts "
+            "100%% of the target's substrates in train and holds out none, so no "
+            "test-set/target-recovery evaluation is performed for this run. Only "
+            "relevant with --parameter-tcid-str. Defaults to --parameter-splitter-str "
+            "if not set."
         ),
     )
     parser.add_argument(
@@ -644,39 +656,50 @@ if __name__ == "__main__":
     final_model = ModelTcid.load_from_checkpoint(best_fold["checkpoint_path"])
     final_thresholds = best_fold["thresholds"]
 
-    test_metrics = evaluate_with_thresholds(final_model, test_loader, final_thresholds)
-    print(
-        f"Thresholded Test F1={test_metrics['f1']:.3f} "
-        f"Precision={test_metrics['precision']:.3f} "
-        f"Recall={test_metrics['recall']:.3f}"
-    )
-
     final_summary = {
         "selected_fold": best_fold["fold_idx"],
         "selection_criterion": "valid_f1_weighted",
         "valid_f1": best_fold["valid_f1"],
-        "test_threshold_metrics": test_metrics,
     }
 
-    if target_mode:
-        target_metrics = evaluate_target_tcid(
-            final_model,
-            test_loader,
-            final_thresholds,
-            target_index=target_index,
-        )
-        target_metrics["tcid"] = split_tcid
-        target_metrics["splitter"] = target_splitter_params
-        target_metrics["cv_pool_splitter"] = splitter_params
-        target_metrics["seed"] = seed
-        final_summary["target_tcid_metrics"] = target_metrics
+    if len(test_datas) == 0:
+        # target_splitter="train": 100% of the target's substrates were used
+        # for training, none held out -- there is nothing left to evaluate.
         print(
-            f"Target {split_tcid} recovery: "
-            f"{target_metrics['recovered']}/{target_metrics['support']} "
-            f"Recall={target_metrics['recall']:.3f} "
-            f"Precision={target_metrics['precision']:.3f} "
-            f"F1={target_metrics['f1']:.3f}"
+            "No held-out test molecules (target splitter 'train' keeps 100% "
+            "of the target's substrates in training) -- skipping test evaluation."
         )
+        final_summary["test_threshold_metrics"] = None
+        if target_mode:
+            final_summary["target_tcid_metrics"] = None
+    else:
+        test_metrics = evaluate_with_thresholds(final_model, test_loader, final_thresholds)
+        print(
+            f"Thresholded Test F1={test_metrics['f1']:.3f} "
+            f"Precision={test_metrics['precision']:.3f} "
+            f"Recall={test_metrics['recall']:.3f}"
+        )
+        final_summary["test_threshold_metrics"] = test_metrics
+
+        if target_mode:
+            target_metrics = evaluate_target_tcid(
+                final_model,
+                test_loader,
+                final_thresholds,
+                target_index=target_index,
+            )
+            target_metrics["tcid"] = split_tcid
+            target_metrics["splitter"] = target_splitter_params
+            target_metrics["cv_pool_splitter"] = splitter_params
+            target_metrics["seed"] = seed
+            final_summary["target_tcid_metrics"] = target_metrics
+            print(
+                f"Target {split_tcid} recovery: "
+                f"{target_metrics['recovered']}/{target_metrics['support']} "
+                f"Recall={target_metrics['recall']:.3f} "
+                f"Precision={target_metrics['precision']:.3f} "
+                f"F1={target_metrics['f1']:.3f}"
+            )
 
     final_dir = os.path.join(outdir, "final_model")
     os.makedirs(final_dir, exist_ok=True)
