@@ -1,0 +1,10 @@
+name: test
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - conda-build
+  - pytest
+  - pytest-cov
+  - sphinx
+  - sphinx_rtd_theme

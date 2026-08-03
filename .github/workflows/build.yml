@@ -13,18 +13,17 @@ permissions:
   contents: write
 
 jobs:
-
   TagRaw:
     runs-on: ubuntu-latest
     outputs:
-     tag: ${{ steps.tag_label.outputs.tag }}
-     changelog: ${{ steps.tag_raw.outputs.changelog }}
+      tag: ${{ steps.tag_label.outputs.tag }}
+      changelog: ${{ steps.tag_raw.outputs.changelog }}
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
           fetch-depth: 0
-      - name: 'Bump version and push tag - dry run'
+      - name: "Bump version and push tag - dry run"
         id: tag_raw
         uses: mathieudutour/github-tag-action@v6.2
         with:
@@ -32,7 +31,7 @@ jobs:
           release_branches: stable
           tag_prefix:
           dry_run: true
-      - name: 'Format tag'
+      - name: "Format tag"
         id: tag_label
         env:
           TAG: ${{ steps.tag_raw.outputs.new_tag }}
@@ -47,14 +46,14 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - name: 'Check file present'
+      - name: "Check file present"
         run: |
           [[ -f CHANGELOG.md ]] || touch CHANGELOG.md
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: 3 # Not needed with a .ruby-version file
           bundler-cache: true # runs 'bundle install' and caches installed gems automatically
-      - name: 'Generate CHANGELOG'
+      - name: "Generate CHANGELOG"
         env:
           CHANGELOG_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -66,13 +65,13 @@ jobs:
       - uses: docker://pandoc/core:2.9
         with:
           args: -o CHANGELOG.data.rst CHANGELOG.md
-      - name: 'Upload Artifact Changelog - md'
+      - name: "Upload Artifact Changelog - md"
         uses: actions/upload-artifact@v7
         with:
           name: changelog-md-artifact
           path: CHANGELOG.md
           retention-days: 1
-      - name: 'Upload Artifact Changelog - rst'
+      - name: "Upload Artifact Changelog - rst"
         uses: actions/upload-artifact@v7
         with:
           name: changelog-rst-artifact
@@ -87,7 +86,7 @@ jobs:
       version_dir: ${{ steps.update_version.outputs.version_dir }}
     steps:
       - uses: actions/checkout@v7
-      - name: 'Update _version.py'
+      - name: "Update _version.py"
         id: update_version
         env:
           TAG: ${{ needs.TagRaw.outputs.tag }}
@@ -100,7 +99,7 @@ jobs:
 
           RECIPE_PATH=$(find . -name meta.yaml | head -n 1)
           sed -i "2s/.*/{% set version = \"$TAG\" %}/" "$RECIPE_PATH"
-      - name: 'Upload Artifact Version'
+      - name: "Upload Artifact Version"
         uses: actions/upload-artifact@v7
         with:
           name: version-artifact
@@ -111,27 +110,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # Get Data
-      - name: 'Checkout'
+      - name: "Checkout"
         uses: actions/checkout@v7
         with:
           persist-credentials: false
           fetch-depth: 0
-      - name: 'Download Artifact Version'
+      - name: "Download Artifact Version"
         uses: actions/download-artifact@v8
         with:
           name: version-artifact
           path: ${{ needs.Version.outputs.version_dir }}
-      - name: 'Download Artifact Changelog - md'
+      - name: "Download Artifact Changelog - md"
         uses: actions/download-artifact@v8
         with:
           name: changelog-md-artifact
-      - name: 'Download Artifact Changelog - rst'
+      - name: "Download Artifact Changelog - rst"
         uses: actions/download-artifact@v8
         with:
           name: changelog-rst-artifact
           path: docs/
       # Commit
-      - name: 'Commit files'
+      - name: "Commit files"
         run: |
           echo "show version file"
           cat ${{ needs.Version.outputs.version_path }}
@@ -142,12 +141,12 @@ jobs:
         env:
           GITHUB_USERNAME: guillaume-gricourt
           GITHUB_EMAIL: guipagui@gmail.com
-      - name: 'Push changes'
+      - name: "Push changes"
         uses: ad-m/github-push-action@v1.3.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: ${{ github.ref }}
-      - name: 'Update main branch'
+      - name: "Update main branch"
         uses: ad-m/github-push-action@v1.3.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -161,7 +160,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - name: 'Bump version and push tag'
+      - name: "Bump version and push tag"
         id: tag
         uses: mathieudutour/github-tag-action@v6.2
         with:
@@ -181,26 +180,26 @@ jobs:
       run:
         shell: bash -l {0} # activate env conda
     steps:
-      - name: 'Checkout'
+      - name: "Checkout"
         uses: actions/checkout@v7
-      - name: 'Deploying miniconda'
+      - name: "Deploying miniconda"
         uses: conda-incubator/setup-miniconda@v4
         with:
           miniconda-version: "latest"
-          environment-file: recipes/workflow.yaml
+          environment-file: .github/recipes/workflow.yaml
           mamba-version: "*"
           channel-priority: true
           use-mamba: true
-      - name: 'Build conda package'
+      - name: "Build conda package"
         run: |
           mkdir -p ${{ env.dirbuild }}
           conda-build recipes --output-folder ${{ env.dirbuild }}
-      - name: 'Find name package'
+      - name: "Find name package"
         id: identify_asset
         run: |
           filename=$(find ${{ env.dirbuild }} | head -n 1)
           echo "asset=$filename" >> "$GITHUB_OUTPUT"
-      - name: 'Upload Artifact Package'
+      - name: "Upload Artifact Package"
         uses: actions/upload-artifact@v7
         with:
           name: package-conda-artifact
@@ -212,11 +211,11 @@ jobs:
     needs: [TagRaw, BuildConda]
     runs-on: ubuntu-latest
     steps:
-      - name: 'Download Artifact Package - Pip'
+      - name: "Download Artifact Package - Pip"
         uses: actions/download-artifact@v8
         with:
           name: package-conda-artifact
-      - name: 'Create Release'
+      - name: "Create Release"
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.TagRaw.outputs.tag }}
