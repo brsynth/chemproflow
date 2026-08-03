@@ -69,28 +69,21 @@ python ./src/chemproflow/tcid/train.py \
 
 ## Run
 
-Build input file (a CSV with a `smiles` column, and optionally a `name` column):
-
-```bash
-export datadir=<path>/chemproflow
-printf 'name,smiles\nfluconazole,OC(Cn1cncn1)(Cn1cncn1)c1ccc(F)cc1F\n' > $datadir/input_smiles.csv
-```
-
 Run pipeline. This predicts whether each compound is a transport candidate,
 predicts its transport mechanism, and retrieves the microorganisms encoding
 the matching TC-ID:
 
 ```bash
 chemproflow pipeline \
-    --input-smiles-csv $datadir/input_smiles.csv \
+    --input-smiles-str 'OC(Cn1cncn1)(Cn1cncn1)c1ccc(F)cc1F' \
     --input-dataset-transport-csv $datadir/dataset/transport_vs_unlabeled.csv \
-    --input-model-transport-pkl "$datadir/transport_vs_unlabeled/kfold-4/base_epoch=16.ckpt" \
+    --input-model-transport-pkl "$datadir/transport_vs_unlabeled/final_model/model_before_calibration.ckpt" \
     --input-encoder-transport-pkl $datadir/transport_vs_unlabeled/encoder.pkl \
-    --input-dirichlet-calibrator-pkl $datadir/transport_vs_unlabeled/kfold-4/dirichlet_calibrator.pkl \
+    --input-dirichlet-calibrator-pkl $datadir/transport_vs_unlabeled/final_model/dirichlet_calibrator.pkl \
     --input-dataset-tcid-csv $datadir/dataset/tcid_vs_smiles.csv \
-    --input-model-tcid-pkl "$datadir/tcid_vs_smiles/kfold-4/base_epoch=19.ckpt" \
+    --input-model-tcid-pkl "$datadir/tcid_vs_smiles/final_model/model.ckpt" \
     --input-encoder-tcid-pkl $datadir/tcid_vs_smiles/encoder.pkl \
-    --input-threshold-tcid-json $datadir/tcid_vs_smiles/kfold-4/thresholds.json \
+    --input-threshold-tcid-json $datadir/tcid_vs_smiles/final_model/thresholds.json \
     --input-catalog-micro-organisms-csv $datadir/biocyc/catalog.csv \
     --input-tcid-equivalent-json $datadir/dataset/tcid_vs_smiles.json \
     --output-results-csv $datadir/results.csv
