@@ -5,6 +5,13 @@ on:
     branches:
       - stable
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
 jobs:
 
   TagRaw:
@@ -136,12 +143,12 @@ jobs:
           GITHUB_USERNAME: guillaume-gricourt
           GITHUB_EMAIL: guipagui@gmail.com
       - name: 'Push changes'
-        uses: ad-m/github-push-action@master
+        uses: ad-m/github-push-action@v1.3.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: ${{ github.ref }}
       - name: 'Update main branch'
-        uses: ad-m/github-push-action@master
+        uses: ad-m/github-push-action@v1.3.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: main
