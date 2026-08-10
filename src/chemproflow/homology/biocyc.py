@@ -509,7 +509,7 @@ if __name__ == "__main__":
     def select_transport(row):
         if row["types"] and "Transport-Reactions" in row["types"]:
             return True
-        if row["comment"] and "IUBMB" in row["comment"]:
+        if row["comment"] and "IUBMB" in str(row["comment"]):
             return True
         return False
 

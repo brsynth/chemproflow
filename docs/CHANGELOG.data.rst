@@ -1,13 +1,21 @@
 Changelog
 =========
 
+`1.3.0 <https://github.com/brsynth/chemproflow/tree/1.3.0>`__ (2026-08-03)
+--------------------------------------------------------------------------
+
+`Full
+Changelog <https://github.com/brsynth/chemproflow/compare/1.2.0...1.3.0>`__
+
+.. _section-1:
+
 `1.2.0 <https://github.com/brsynth/chemproflow/tree/1.2.0>`__ (2026-07-24)
 --------------------------------------------------------------------------
 
 `Full
 Changelog <https://github.com/brsynth/chemproflow/compare/1.1.0...1.2.0>`__
 
-.. _section-1:
+.. _section-2:
 
 `1.1.0 <https://github.com/brsynth/chemproflow/tree/1.1.0>`__ (2026-03-06)
 --------------------------------------------------------------------------
