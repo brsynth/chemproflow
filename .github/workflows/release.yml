@@ -170,7 +170,7 @@ jobs:
           tag_prefix:
 
   Release:
-    needs: [Tag]
+    needs: [TagRaw, Tag]
     runs-on: ubuntu-latest
     steps:
       - name: "Create Release"
