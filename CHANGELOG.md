@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.3.1](https://github.com/brsynth/chemproflow/tree/1.3.1) (2026-08-03)
+
+[Full Changelog](https://github.com/brsynth/chemproflow/compare/1.3.0...1.3.1)
+
+**Merged pull requests:**
+
+- chore\(deps\): bump softprops/action-gh-release from 2 to 3 [\#5](https://github.com/brsynth/chemproflow/pull/5) ([dependabot[bot]](https://github.com/apps/dependabot))
+- chore\(deps\): bump actions/checkout from 4 to 7 [\#4](https://github.com/brsynth/chemproflow/pull/4) ([dependabot[bot]](https://github.com/apps/dependabot))
+- chore\(deps\): bump conda-incubator/setup-miniconda from 3 to 4 [\#3](https://github.com/brsynth/chemproflow/pull/3) ([dependabot[bot]](https://github.com/apps/dependabot))
+- chore\(deps\): bump actions/download-artifact from 4 to 8 [\#2](https://github.com/brsynth/chemproflow/pull/2) ([dependabot[bot]](https://github.com/apps/dependabot))
+- chore\(deps\): bump actions/upload-artifact from 4 to 7 [\#1](https://github.com/brsynth/chemproflow/pull/1) ([dependabot[bot]](https://github.com/apps/dependabot))
+
 ## [1.3.0](https://github.com/brsynth/chemproflow/tree/1.3.0) (2026-08-03)
 
 [Full Changelog](https://github.com/brsynth/chemproflow/compare/1.2.0...1.3.0)
